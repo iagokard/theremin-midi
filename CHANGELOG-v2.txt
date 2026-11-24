@@ -1,0 +1,39 @@
+THEREMIDI HC-SR04 — NOVA VERSÃO DE CONTROLES
+
+Alterações desta versão:
+- Cada HC-SR04 possui modo independente: NOTES, VELOCITY ou CC.
+- Botão de seleção alterna a configuração entre Sensor 1 e Sensor 2.
+- Botão de modo percorre NOTES -> VELOCITY -> CC -> NOTES.
+- Velocity global ajustável pelo sensor em modo VELOCITY; fica retida quando a leitura deixa de ser válida e afeta os próximos Note On.
+- Número CC individual por sensor, com passos de +1/-1; ambos iniciam em CC11.
+- Botões dedicados para oitava, canal MIDI, nota base cromática e modo de escala.
+- Escalas disponíveis: Major, Minor (Aeolian), Harmonic Minor, Minor Pentatonic, Major Pentatonic e Whole Tone.
+- Tela OLED com páginas de configuração, nota tocada, velocity e CC.
+- A tela de nota retorna à configuração 250 ms após o firmware liberar a nota; ações dos botões mostram configuração temporariamente por 800 ms.
+- Sustain preservado.
+- Dois pinos reservados para CC ±10, desabilitados por padrão.
+
+Pinagem dos botões principais:
+D4 seleção do sensor
+D5 ciclo de modo
+D6 CC -1
+D7 CC +1
+D8 oitava -1
+D9 oitava +1
+D10 canal MIDI -1
+D11 canal MIDI +1
+D12 nota base -1
+D13 nota base +1
+A4 próximo modo de escala
+A5 Sustain
+
+Pinos opcionais CC ±10:
+D0 CC -10
+D1 CC +10
+
+ATENÇÃO:
+- A versão necessita de 12 botões principais (incluindo Sustain); o kit original de 10 botões não é suficiente para todas as funções simultaneamente.
+- Os botões opcionais CC ±10 não estão habilitados por padrão.
+- D0/D1 também são Serial1 RX/TX; não use Serial1 enquanto os botões opcionais estiverem habilitados.
+- O esquema original do repositório mostra sensores Sharp e Arduino Pro Micro. Não deve ser usado para esta versão com HC-SR04 e Leonardo.
+- O modo Pitch Bend por combinação de botões da versão anterior foi removido para abrir espaço aos três modos solicitados.

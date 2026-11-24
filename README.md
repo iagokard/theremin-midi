@@ -1,38 +1,7 @@
-# Theremidi
+# Theremidi — HC-SR04 / Arduino Leonardo
 
-- Full video: https://youtu.be/CWPtxGrBlU8
-- Making Music with Arduino: https://go.musiconerd.com/nerd-musician-pro/
-- Curso Fazendo Música com Arduino em Português: https://go.musiconerd.com/fazendo-musica-com-arduino
+This folder contains the adapted Theremidi project for an Arduino Leonardo (ATmega32U4) with two HC-SR04 ultrasonic sensors, USB MIDI, and an optional SSD1306 I2C OLED.
 
-In this video, I am going to show you the Theremidi, a DIY MIDI Theremin, made using an Arduino Pro Micro!
+**Read `README_HC-SR04_PT-BR.md` before wiring.** The original Fritzing schematic in `Schematic/` depicts the original Pro Micro and Sharp analog sensors; it is not the wiring diagram for this HC-SR04/Leonardo adaptation.
 
-The Theremin was one of the first electronic musical instruments invented in history, by Leo Theremin. It consists of a synthesizer that uses two antennas as capacitive sensors, which track the position of the player's hands, controlling the volume and the pitch. 
-
-However, playing a Theremin is super hard, it requires a lot of practice, and it is very expensive. So, why not have something similar but way cheaper and way easier to play? That's what I did, I created my own MIDI Theremin!
-
-The Theremidi uses two infrared distance sensors, instead of capacitive antennas, and can track the position of your hands in the air. This position is then converted into MIDI notes, or pitch bend - right hand, or MIDI CC - left hand.
-
-There's also an OLED display and some buttons that allow you to change octave, transpose, MIDI channel, and switch between scales and pitch bend!
-
-Material:
-
-- Arduino Pro Micro: https://amzn.to/2Vcz3Nz
-- Sharp GP2Y0A41SK0F: https://amzn.to/3biVfha
-- Oled Display: https://www.amazon.com/gp/product/B07QW95L1B/ref=ppx_yo_dt_b_asin_title_o00_s00?ie=UTF8&psc=1
-- Button that fits in 10mm hole (haven't found a link yet)
-
-
-Patreon: https://www.patreon.com/musiconerd
-
-Blog: http://www.musiconerd.com
-
-Facebook: https://www.facebook.com/musiconerdmusiconerd
-
-Instagram: http://www.instagram.com/musiconerd
-
-
----
-
-## Variante HC-SR04 / Arduino Leonardo
-
-Esta cópia inclui uma adaptação para dois sensores HC-SR04. Consulte [`README_HC-SR04_PT-BR.md`](README_HC-SR04_PT-BR.md) para a pinagem, os parâmetros e as instruções de teste. O firmware modificado está na pasta `Theremidi/`. O esquema elétrico original não foi atualizado e ainda mostra os sensores infravermelhos Sharp; para os HC-SR04, siga o guia específico.
+The adapted firmware gives each sensor an independent mode (NOTES, VELOCITY, CC), retains the last valid global velocity value, and supports individual CC number settings. See the Portuguese README for pin assignments and button behavior.

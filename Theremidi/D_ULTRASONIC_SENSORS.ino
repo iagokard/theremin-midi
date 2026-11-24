@@ -1,29 +1,5 @@
-/////////////////////////////////////////////
-// HC-SR04 ultrasonic distance acquisition and MIDI processing.
-//
-// Wiring in this version:
-//   Sensor 1 (notes / Pitch Bend): TRIG=A0, ECHO=A1
-//   Sensor 2 (MIDI CC):            TRIG=A2, ECHO=A3
-//
-// The sensors are triggered alternately. This avoids firing both modules
-// together and leaves >60ms between consecutive trigger pulses.
+// HC-SR04 acquisition and mode-dependent MIDI output.
 
-namespace {
-  int activeNote = -1;
-  byte activeNoteChannel = 0;
-
-  int activePitchBendNote = -1;
-  byte activePitchBendChannel = 0;
-  int lastSentPitchBend = -1;
-
-  int lastSentCC = -1;
-  byte lastSentCCChannel = 0;
-
-  const byte CC_SEND_DELTA = 1;
-}
-
-// Send a short trigger pulse and measure the ECHO high-pulse duration.
-// Returns 0 when no echo is received before the timeout.
 float readUltrasonicDistanceCm(byte sensorIndex) {
   const byte trigPin = ULTRASONIC_TRIG_PIN[sensorIndex];
   const byte echoPin = ULTRASONIC_ECHO_PIN[sensorIndex];
@@ -40,20 +16,14 @@ float readUltrasonicDistanceCm(byte sensorIndex) {
     ULTRASONIC_ECHO_TIMEOUT_US
   );
 
-  if (echoDuration == 0) {
-    return 0.0f;
-  }
-
-  // HC-SR04 approximation: distance in cm = echo duration in microseconds / 58.
+  if (echoDuration == 0) return 0.0f;
   return (float)echoDuration / 58.0f;
 }
 
-// Update the filtered distance and determine whether a hand is inside
-// the configured playing window.
 void updateUltrasonicSensorState(byte sensorIndex, float newDistanceCm) {
   const bool inPlayingRange =
-    (newDistanceCm >= ULTRASONIC_MIN_DISTANCE_CM) &&
-    (newDistanceCm <= ULTRASONIC_MAX_DISTANCE_CM);
+    newDistanceCm >= ULTRASONIC_MIN_DISTANCE_CM &&
+    newDistanceCm <= ULTRASONIC_MAX_DISTANCE_CM;
 
   if (!inPlayingRange) {
     if (ultrasonicInvalidReadings[sensorIndex] < 255) {
@@ -66,10 +36,10 @@ void updateUltrasonicSensorState(byte sensorIndex, float newDistanceCm) {
     }
 
 #ifdef DEBUG
-    Serial.print("Sensor ");
+    Serial.print(F("Sensor "));
     Serial.print(sensorIndex + 1);
-    Serial.print(" - sem leitura valida / fora da faixa: ");
-    Serial.println(newDistanceCm);
+    Serial.print(F(" fora da faixa; leitura: "));
+    Serial.println(newDistanceCm, 1);
 #endif
     return;
   }
@@ -88,180 +58,206 @@ void updateUltrasonicSensorState(byte sensorIndex, float newDistanceCm) {
   ultrasonicSensorActive[sensorIndex] = true;
 
 #ifdef DEBUG
-  Serial.print("Sensor ");
+  Serial.print(F("Sensor "));
   Serial.print(sensorIndex + 1);
-  Serial.print(" - distancia: ");
+  Serial.print(F(" distancia: "));
   Serial.print(newDistanceCm, 1);
-  Serial.print(" cm | filtrada: ");
+  Serial.print(F(" cm | filtrada: "));
   Serial.println(ultrasonicDistanceCm[sensorIndex], 1);
 #endif
 }
 
-void stopCurrentNote() {
-  if (activeNote >= 0) {
-    noteOff(activeNoteChannel, (byte)activeNote, 0);
-    MidiUSB.flush();
-    activeNote = -1;
-  }
-
-  note_is_playing = false;
-}
-
-void stopPitchBendNote() {
-  if (activePitchBendNote >= 0) {
-    // Return the pitch wheel to its neutral centre before releasing the note.
-    pitchBend(activePitchBendChannel, 8192);
-    noteOff(activePitchBendChannel, (byte)activePitchBendNote, 0);
-    MidiUSB.flush();
-    activePitchBendNote = -1;
-  }
-
-  pitchBendIsPlaying = false;
-  lastSentPitchBend = -1;
-  pitchBendVal = 8192;
-  pitchBendPVal = -1;
-}
-
-void processNoteSensor() {
-  if (!ultrasonicSensorActive[SENSOR_NOTE]) {
-    stopCurrentNote();
-    stopPitchBendNote();
-    return;
-  }
-
-  const float distanceCm = ultrasonicDistanceCm[SENSOR_NOTE];
-
-  if (pitchBendIsOn) {
-    stopCurrentNote();
-
-    const int bendNote = NOTE + octave[octaveIndex];
-
-    if (activePitchBendNote != bendNote || activePitchBendChannel != MIDI_CH) {
-      stopPitchBendNote();
-
-      noteOn(MIDI_CH, (byte)bendNote, 127);
-      MidiUSB.flush();
-
-      activePitchBendNote = bendNote;
-      activePitchBendChannel = MIDI_CH;
-      pitchBendIsPlaying = true;
-      lastSentPitchBend = -1;
-    }
-
-    // Nearer hand = higher pitch-bend value, matching the original sensor direction.
-    pitchBendVal = (int)round(fscale(
-      ULTRASONIC_MIN_DISTANCE_CM,
-      ULTRASONIC_MAX_DISTANCE_CM,
-      16383,
-      0,
-      distanceCm,
-      IR_curve
-    ));
-    pitchBendVal = constrain(pitchBendVal, 0, 16383);
-
-    if (lastSentPitchBend < 0 || abs(pitchBendVal - lastSentPitchBend) >= 8) {
-      pitchBend(MIDI_CH, pitchBendVal);
-      MidiUSB.flush();
-      lastSentPitchBend = pitchBendVal;
-      pitchBendPVal = pitchBendVal;
-    }
-
-    return;
-  }
-
-  // Switching back from Pitch Bend mode releases its sustained reference note.
-  stopPitchBendNote();
-
-  // Original Theremidi uses 14 scale positions (indexes 0..13) for this sensor.
-  // Nearer hand = larger scale index / higher note.
-  int scalePosition = (int)round(fscale(
+int distanceToScalePosition(float distanceCm) {
+  int position = (int)round(fscale(
     ULTRASONIC_MIN_DISTANCE_CM,
     ULTRASONIC_MAX_DISTANCE_CM,
-    13,
+    SCALE_NOTE_COUNT - 1,
     0,
     distanceCm,
     IR_curve
   ));
-  scalePosition = constrain(scalePosition, 0, 13);
-
-  int nextNote = NOTE + scaleNotes[scaleIndex][scalePosition] + octave[octaveIndex];
-  nextNote = constrain(nextNote, 0, 127);
-
-  if (activeNote != nextNote || activeNoteChannel != MIDI_CH) {
-    stopCurrentNote();
-
-    noteOn(MIDI_CH, (byte)nextNote, 127); // Velocity remains fixed at 127, as requested.
-    MidiUSB.flush();
-
-    activeNote = nextNote;
-    activeNoteChannel = MIDI_CH;
-    note_is_playing = true;
-  }
-
-#ifdef DEBUG
-  Serial.print("Sensor 1 - indice da escala: ");
-  Serial.print(scalePosition);
-  Serial.print(" | nota MIDI: ");
-  Serial.println(nextNote);
-#endif
+  return constrain(position, 0, SCALE_NOTE_COUNT - 1);
 }
 
-void processCCSensor() {
-  int nextCCValue = 0;
+byte distanceToMidiValue(float distanceCm, byte minimumValue) {
+  int value = (int)round(fscale(
+    ULTRASONIC_MIN_DISTANCE_CM,
+    ULTRASONIC_MAX_DISTANCE_CM,
+    127,
+    minimumValue,
+    distanceCm,
+    IR_curve
+  ));
+  value = constrain(value, minimumValue, 127);
+  return (byte)value;
+}
 
-  if (ultrasonicSensorActive[SENSOR_CC]) {
-    // Nearer hand = higher CC value. By default CC7 is MIDI Volume.
-    nextCCValue = (int)round(fscale(
-      ULTRASONIC_MIN_DISTANCE_CM,
-      ULTRASONIC_MAX_DISTANCE_CM,
-      127,
-      0,
-      ultrasonicDistanceCm[SENSOR_CC],
-      IR_curve
-    ));
-    nextCCValue = constrain(nextCCValue, 0, 127);
-  }
+int calculateNoteForSensor(byte sensorIndex) {
+  const int scalePosition = distanceToScalePosition(ultrasonicDistanceCm[sensorIndex]);
+  const int rootMidiNote = 48 + rootPitchClass + octaveOffsets[octaveIndex];
+  const int note = rootMidiNote + scaleIntervals[scaleModeIndex][scalePosition];
+  return constrain(note, 0, 127);
+}
 
-  if (lastSentCC < 0 || abs(nextCCValue - lastSentCC) >= CC_SEND_DELTA || lastSentCCChannel != MIDI_CH) {
-    controlChange(MIDI_CH, CC, (byte)nextCCValue);
-    MidiUSB.flush();
+bool otherSensorHoldsSameNote(byte sensorIndex, int noteNumber, byte channel) {
+  const byte otherSensor = (sensorIndex == SENSOR_1) ? SENSOR_2 : SENSOR_1;
+  return activeNote[otherSensor] == noteNumber &&
+         activeNoteChannel[otherSensor] == channel;
+}
 
-    lastSentCC = nextCCValue;
-    lastSentCCChannel = MIDI_CH;
+void stopNoteForSensor(byte sensorIndex) {
+  if (activeNote[sensorIndex] >= 0) {
+    // If both sensors hold the same pitch on the same channel, send Note Off
+    // only when the second sensor releases it as well.
+    if (!otherSensorHoldsSameNote(
+          sensorIndex,
+          activeNote[sensorIndex],
+          activeNoteChannel[sensorIndex]
+        )) {
+      noteOff(activeNoteChannel[sensorIndex], (byte)activeNote[sensorIndex], 0);
+      MidiUSB.flush();
+    }
 
-#ifdef DEBUG
-    Serial.print("Sensor 2 - CC");
-    Serial.print(CC);
-    Serial.print(": ");
-    Serial.println(nextCCValue);
-#endif
+    lastPlayedNote[sensorIndex] = activeNote[sensorIndex];
+    activeNote[sensorIndex] = -1;
+    noteStoppedAt[sensorIndex] = millis();
+    lastNoteScreenUntil = millis() + DISPLAY_NOTE_RELEASE_DELAY_MS;
   }
 }
 
-// Call continuously from loop(). One sensor is measured every 65ms; because
-// the two sensors alternate, each individual module is measured every ~130ms.
+void processNoteSensor(byte sensorIndex) {
+  if (!ultrasonicSensorActive[sensorIndex]) {
+    stopNoteForSensor(sensorIndex);
+    return;
+  }
+
+  const int nextNote = calculateNoteForSensor(sensorIndex);
+  if (activeNote[sensorIndex] != nextNote || activeNoteChannel[sensorIndex] != midiChannel) {
+    stopNoteForSensor(sensorIndex);
+
+    if (!otherSensorHoldsSameNote(sensorIndex, nextNote, midiChannel)) {
+      noteOn(midiChannel, (byte)nextNote, globalVelocity);
+      MidiUSB.flush();
+    }
+
+    activeNote[sensorIndex] = nextNote;
+    activeNoteChannel[sensorIndex] = midiChannel;
+    lastPlayedNote[sensorIndex] = nextNote;
+    lastNoteSensor = sensorIndex;
+    noteStoppedAt[sensorIndex] = 0;
+    lastNoteScreenUntil = 0;
+
+#ifdef DEBUG
+    Serial.print(F("Sensor "));
+    Serial.print(sensorIndex + 1);
+    Serial.print(F(" Note On: "));
+    Serial.print(noteNames[nextNote % 12]);
+    Serial.print((nextNote / 12) - 1);
+    Serial.print(F(" velocity="));
+    Serial.println(globalVelocity);
+#endif
+  }
+}
+
+void clearSensorCC(byte sensorIndex) {
+  if (lastSentCCValue[sensorIndex] >= 0 &&
+      lastSentCCNumber[sensorIndex] >= 0 &&
+      lastSentCCChannel[sensorIndex] >= 0) {
+    controlChange(
+      (byte)lastSentCCChannel[sensorIndex],
+      (byte)lastSentCCNumber[sensorIndex],
+      0
+    );
+    MidiUSB.flush();
+  }
+
+  lastSentCCValue[sensorIndex] = -1;
+  lastSentCCNumber[sensorIndex] = -1;
+  lastSentCCChannel[sensorIndex] = -1;
+}
+
+void sendSensorCC(byte sensorIndex, byte value) {
+  sensorCCValue[sensorIndex] = value;
+
+  if (lastSentCCValue[sensorIndex] != value ||
+      lastSentCCNumber[sensorIndex] != sensorCCNumber[sensorIndex] ||
+      lastSentCCChannel[sensorIndex] != midiChannel) {
+    controlChange(midiChannel, sensorCCNumber[sensorIndex], value);
+    MidiUSB.flush();
+
+    lastSentCCValue[sensorIndex] = value;
+    lastSentCCNumber[sensorIndex] = sensorCCNumber[sensorIndex];
+    lastSentCCChannel[sensorIndex] = midiChannel;
+
+#ifdef DEBUG
+    Serial.print(F("Sensor "));
+    Serial.print(sensorIndex + 1);
+    Serial.print(F(" CC"));
+    Serial.print(sensorCCNumber[sensorIndex]);
+    Serial.print(F(" = "));
+    Serial.println(value);
+#endif
+  }
+}
+
+void processCCSensor(byte sensorIndex) {
+  byte value = 0;
+  if (ultrasonicSensorActive[sensorIndex]) {
+    value = distanceToMidiValue(ultrasonicDistanceCm[sensorIndex], 0);
+  }
+  sendSensorCC(sensorIndex, value);
+}
+
+void processVelocitySensor(byte sensorIndex) {
+  // Intentionally do nothing when the hand leaves the zone: the last valid
+  // global velocity is retained until a new valid distance is measured.
+  if (!ultrasonicSensorActive[sensorIndex]) return;
+
+  globalVelocity = distanceToMidiValue(ultrasonicDistanceCm[sensorIndex], 1);
+
+#ifdef DEBUG
+  Serial.print(F("Global velocity = "));
+  Serial.println(globalVelocity);
+#endif
+}
+
+void processSensorByMode(byte sensorIndex) {
+  switch (sensorMode[sensorIndex]) {
+    case SENSOR_MODE_NOTES:
+      processNoteSensor(sensorIndex);
+      break;
+
+    case SENSOR_MODE_VELOCITY:
+      stopNoteForSensor(sensorIndex);
+      processVelocitySensor(sensorIndex);
+      break;
+
+    case SENSOR_MODE_CC:
+      stopNoteForSensor(sensorIndex);
+      processCCSensor(sensorIndex);
+      break;
+  }
+}
+
+// Alternates sensors and keeps at least 65ms between trigger pulses.
+// Each sensor is therefore sampled approximately every 130ms.
 void serviceUltrasonicSensors() {
-  static byte nextSensor = SENSOR_NOTE;
+  static byte nextSensor = SENSOR_1;
   static bool firstMeasurement = true;
   static unsigned long lastMeasurementAt = 0;
 
   const unsigned long now = millis();
-  if (!firstMeasurement && (unsigned long)(now - lastMeasurementAt) < ULTRASONIC_TRIGGER_INTERVAL_MS) {
+  if (!firstMeasurement &&
+      (unsigned long)(now - lastMeasurementAt) < ULTRASONIC_TRIGGER_INTERVAL_MS) {
     return;
   }
 
   firstMeasurement = false;
-
   const float distanceCm = readUltrasonicDistanceCm(nextSensor);
   lastMeasurementAt = millis();
 
   updateUltrasonicSensorState(nextSensor, distanceCm);
+  processSensorByMode(nextSensor);
 
-  if (nextSensor == SENSOR_NOTE) {
-    processNoteSensor();
-    nextSensor = SENSOR_CC;
-  } else {
-    processCCSensor();
-    nextSensor = SENSOR_NOTE;
-  }
+  nextSensor = (nextSensor == SENSOR_1) ? SENSOR_2 : SENSOR_1;
 }
