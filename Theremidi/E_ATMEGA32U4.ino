@@ -2,15 +2,15 @@
 // if using with ATmega32U4 (micro, pro micro, leonardo...)
 #ifdef ATMEGA32U4
 
-// Arduino (pro)micro midi functions MIDIUSB Library
+// Arduino (pro)micro MIDI functions using the MIDIUSB library.
 void noteOn(byte channel, byte pitch, byte velocity) {
-  midiEventPacket_t noteOn = {0x09, (byte)(0x90 | channel), pitch, velocity};
-  MidiUSB.sendMIDI(noteOn);
+  midiEventPacket_t event = {0x09, (byte)(0x90 | channel), pitch, velocity};
+  MidiUSB.sendMIDI(event);
 }
 
 void noteOff(byte channel, byte pitch, byte velocity) {
-  midiEventPacket_t noteOff = {0x08, (byte)(0x80 | channel), pitch, velocity};
-  MidiUSB.sendMIDI(noteOff);
+  midiEventPacket_t event = {0x08, (byte)(0x80 | channel), pitch, velocity};
+  MidiUSB.sendMIDI(event);
 }
 
 void controlChange(byte channel, byte control, byte value) {
@@ -19,10 +19,24 @@ void controlChange(byte channel, byte control, byte value) {
 }
 
 void pitchBend(byte channel, int value) {
-  byte lowValue = value & 0x7F;
-  byte highValue = value >> 7;
-  midiEventPacket_t pitchBend = {0x0E, (byte)(0xE0 | channel), lowValue, highValue};
-  MidiUSB.sendMIDI(pitchBend);
+  value = constrain(value, 0, 16383);
+  const byte lowValue = (byte)(value & 0x7F);
+  const byte highValue = (byte)((value >> 7) & 0x7F);
+  midiEventPacket_t event = {0x0E, (byte)(0xE0 | channel), lowValue, highValue};
+  MidiUSB.sendMIDI(event);
+}
+
+// RPN 0,0 = Pitch Bend Sensitivity. Configure +/-12 semitones so a full
+// sensor sweep covers two octaves. Instruments that ignore RPN may need this
+// range configured manually in the DAW/plugin.
+void configurePitchBendRange(byte channel) {
+  controlChange(channel, 101, 0); // RPN MSB
+  controlChange(channel, 100, 0); // RPN LSB
+  controlChange(channel, 6, PITCH_BEND_RANGE_SEMITONES); // Data Entry MSB
+  controlChange(channel, 38, 0); // Data Entry LSB (0 cents)
+  controlChange(channel, 101, 127); // Deselect RPN
+  controlChange(channel, 100, 127);
+  MidiUSB.flush();
 }
 
 #endif

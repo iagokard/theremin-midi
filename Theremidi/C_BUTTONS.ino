@@ -73,24 +73,22 @@ void handleButtonPressed(byte buttonId) {
       break;
 
     case BTN_OCTAVE_MINUS:
-      if (octaveIndex > 0) octaveIndex--;
-      refreshActiveNotes();
+      changeSelectedOctave(-1);
       requestConfigDisplay();
       break;
 
     case BTN_OCTAVE_PLUS:
-      if (octaveIndex < 4) octaveIndex++;
-      refreshActiveNotes();
+      changeSelectedOctave(1);
       requestConfigDisplay();
       break;
 
     case BTN_CHANNEL_MINUS:
-      changeMidiChannel(-1);
+      changeSelectedMidiChannel(-1);
       requestConfigDisplay();
       break;
 
     case BTN_CHANNEL_PLUS:
-      changeMidiChannel(1);
+      changeSelectedMidiChannel(1);
       requestConfigDisplay();
       break;
 
@@ -108,17 +106,15 @@ void handleButtonPressed(byte buttonId) {
 
     case BTN_SCALE_MODE:
       scaleModeIndex = (scaleModeIndex + 1) % SCALE_COUNT;
+      for (byte i = 0; i < N_ULTRASONIC_SENSORS; i++) {
+        currentScalePosition[i] = -1;
+      }
       refreshActiveNotes();
       requestConfigDisplay();
       break;
 
     case BTN_SUSTAIN:
-      if (!sustainIsPressed) {
-        sustainIsPressed = true;
-        sustainChannel = midiChannel;
-        controlChange(sustainChannel, SUSTAIN_CC, 127);
-        MidiUSB.flush();
-      }
+      pressGlobalSustain();
       break;
 
     case BTN_CC_MINUS_10:
@@ -139,28 +135,113 @@ void handleButtonPressed(byte buttonId) {
 
 void handleButtonReleased(byte buttonId) {
   if (buttonId == BTN_SUSTAIN && sustainIsPressed) {
-    controlChange(sustainChannel, SUSTAIN_CC, 0);
-    MidiUSB.flush();
-    sustainIsPressed = false;
+    releaseGlobalSustain();
   }
+}
+
+void pressGlobalSustain() {
+  if (sustainIsPressed) return;
+
+  sustainIsPressed = true;
+  sustainChannelCount = 0;
+
+  for (byte sensor = 0; sensor < N_ULTRASONIC_SENSORS; sensor++) {
+    const byte channel = sensorMidiChannel[sensor];
+    bool alreadyStored = false;
+
+    for (byte i = 0; i < sustainChannelCount; i++) {
+      if (sustainChannels[i] == channel) {
+        alreadyStored = true;
+        break;
+      }
+    }
+
+    if (!alreadyStored) {
+      sustainChannels[sustainChannelCount++] = channel;
+      controlChange(channel, SUSTAIN_CC, 127);
+    }
+  }
+
+  MidiUSB.flush();
+}
+
+void releaseGlobalSustain() {
+  for (byte i = 0; i < sustainChannelCount; i++) {
+    controlChange(sustainChannels[i], SUSTAIN_CC, 0);
+  }
+  MidiUSB.flush();
+  sustainChannelCount = 0;
+  sustainIsPressed = false;
+}
+
+void syncGlobalSustainChannels() {
+  if (!sustainIsPressed) return;
+
+  byte nextChannels[N_ULTRASONIC_SENSORS] = {0, 0};
+  byte nextCount = 0;
+
+  for (byte sensor = 0; sensor < N_ULTRASONIC_SENSORS; sensor++) {
+    const byte channel = sensorMidiChannel[sensor];
+    bool alreadyStored = false;
+    for (byte i = 0; i < nextCount; i++) {
+      if (nextChannels[i] == channel) {
+        alreadyStored = true;
+        break;
+      }
+    }
+    if (!alreadyStored) nextChannels[nextCount++] = channel;
+  }
+
+  // Release channels no longer assigned to either sensor.
+  for (byte i = 0; i < sustainChannelCount; i++) {
+    bool stillUsed = false;
+    for (byte j = 0; j < nextCount; j++) {
+      if (sustainChannels[i] == nextChannels[j]) {
+        stillUsed = true;
+        break;
+      }
+    }
+    if (!stillUsed) controlChange(sustainChannels[i], SUSTAIN_CC, 0);
+  }
+
+  // Apply Sustain to newly assigned channels.
+  for (byte i = 0; i < nextCount; i++) {
+    bool alreadyActive = false;
+    for (byte j = 0; j < sustainChannelCount; j++) {
+      if (nextChannels[i] == sustainChannels[j]) {
+        alreadyActive = true;
+        break;
+      }
+    }
+    if (!alreadyActive) controlChange(nextChannels[i], SUSTAIN_CC, 127);
+  }
+
+  sustainChannelCount = nextCount;
+  for (byte i = 0; i < nextCount; i++) sustainChannels[i] = nextChannels[i];
+  MidiUSB.flush();
 }
 
 void cycleSelectedSensorMode() {
   const byte oldMode = sensorMode[selectedSensor];
-  const byte newMode = (oldMode + 1) % 3;
+  const byte newMode = (oldMode + 1) % SENSOR_MODE_COUNT;
 
   if (oldMode == SENSOR_MODE_NOTES) {
     stopNoteForSensor(selectedSensor);
   } else if (oldMode == SENSOR_MODE_CC) {
     clearSensorCC(selectedSensor);
+  } else if (oldMode == SENSOR_MODE_PITCH_BEND) {
+    stopPitchBendForSensor(selectedSensor);
   }
 
+  currentScalePosition[selectedSensor] = -1;
   sensorMode[selectedSensor] = newMode;
 
   if (newMode == SENSOR_MODE_NOTES && ultrasonicSensorActive[selectedSensor]) {
     processNoteSensor(selectedSensor);
   } else if (newMode == SENSOR_MODE_CC) {
     processCCSensor(selectedSensor);
+  } else if (newMode == SENSOR_MODE_PITCH_BEND && ultrasonicSensorActive[selectedSensor]) {
+    processPitchBendSensor(selectedSensor);
   }
 
 #ifdef DEBUG
@@ -183,29 +264,42 @@ void changeSelectedCCNumber(int amount) {
   }
 }
 
-void changeMidiChannel(int amount) {
-  // Clear currently active CC values on their previous channels before changing channel.
-  for (byte i = 0; i < N_ULTRASONIC_SENSORS; i++) {
-    clearSensorCC(i);
+void changeSelectedOctave(int amount) {
+  int nextOctave = (int)sensorOctaveIndex[selectedSensor] + amount;
+  nextOctave = constrain(nextOctave, 0, 4);
+  if (nextOctave == sensorOctaveIndex[selectedSensor]) return;
+
+  sensorOctaveIndex[selectedSensor] = (byte)nextOctave;
+  currentScalePosition[selectedSensor] = -1;
+  refreshSensorMusicalOutput(selectedSensor);
+}
+
+void changeSelectedMidiChannel(int amount) {
+  int nextChannel = (int)sensorMidiChannel[selectedSensor] + amount;
+  nextChannel = constrain(nextChannel, 0, 15);
+  if (nextChannel == sensorMidiChannel[selectedSensor]) return;
+
+  // Clear a CC using its previous channel before storing the new channel.
+  clearSensorCC(selectedSensor);
+  sensorMidiChannel[selectedSensor] = (byte)nextChannel;
+  syncGlobalSustainChannels();
+  refreshSensorMusicalOutput(selectedSensor);
+
+  if (sensorMode[selectedSensor] == SENSOR_MODE_CC) {
+    processCCSensor(selectedSensor);
   }
+}
 
-  int nextChannel = (int)midiChannel + amount;
-  if (nextChannel < 0) nextChannel = 0;
-  if (nextChannel > 15) nextChannel = 15;
-  midiChannel = (byte)nextChannel;
-
-  refreshActiveNotes();
-  for (byte i = 0; i < N_ULTRASONIC_SENSORS; i++) {
-    if (sensorMode[i] == SENSOR_MODE_CC) {
-      processCCSensor(i);
-    }
+void refreshSensorMusicalOutput(byte sensorIndex) {
+  if (sensorMode[sensorIndex] == SENSOR_MODE_NOTES) {
+    processNoteSensor(sensorIndex);
+  } else if (sensorMode[sensorIndex] == SENSOR_MODE_PITCH_BEND) {
+    processPitchBendSensor(sensorIndex);
   }
 }
 
 void refreshActiveNotes() {
   for (byte i = 0; i < N_ULTRASONIC_SENSORS; i++) {
-    if (sensorMode[i] == SENSOR_MODE_NOTES && ultrasonicSensorActive[i]) {
-      processNoteSensor(i);
-    }
+    refreshSensorMusicalOutput(i);
   }
 }

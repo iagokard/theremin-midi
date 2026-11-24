@@ -2,7 +2,7 @@
   Theremidi HC-SR04 adaptation for Arduino Leonardo (ATmega32U4).
 
   Two ultrasonic sensors can be configured independently. Each sensor can
-  operate in one of three modes: NOTES, VELOCITY or MIDI CC.
+  operate in one of four modes: NOTES, VELOCITY, MIDI CC or PITCH BEND.
 
   Default assignment:
     Sensor 1: NOTES       TRIG A0 / ECHO A1
@@ -10,17 +10,17 @@
 
   Main button wiring (each button connects its pin to GND when pressed):
     D4  Sensor select (Sensor 1 / Sensor 2)
-    D5  Cycle selected sensor mode (NOTES / VELOCITY / CC)
+    D5  Cycle selected sensor mode (NOTES / VELOCITY / CC / PITCH)
     D6  Selected sensor CC number -1
     D7  Selected sensor CC number +1
-    D8  Octave -1
-    D9  Octave +1
-    D10 MIDI channel -1
-    D11 MIDI channel +1
-    D12 Root note -1 (C, C#, D ... B)
-    D13 Root note +1
-    A4  Cycle musical scale mode
-    A5  Sustain (hold to sustain)
+    D8  Selected sensor octave -1
+    D9  Selected sensor octave +1
+    D10 Selected sensor MIDI channel -1
+    D11 Selected sensor MIDI channel +1
+    D12 Global root note -1 (C, C#, D ... B)
+    D13 Global root note +1
+    A4  Cycle global musical scale mode
+    A5  Global sustain (hold to sustain on both configured sensor channels)
 
   Optional CC step buttons (disabled by default):
     D0  Selected sensor CC number -10
@@ -30,10 +30,6 @@
   ENABLE_CC_STEP10_BUTTONS to 1. Do not use Serial1 while they are enabled.
 
   OLED SSD1306 I2C on Leonardo: SDA=D2, SCL=D3.
-
-  Note: the original two-button Pitch Bend toggle is replaced by the requested
-  per-sensor NOTES / VELOCITY / CC mode selector. Pitch Bend is not a separate
-  user mode in this version.
 */
 
 /////////////////////////////////////////////
@@ -69,8 +65,13 @@ const byte ULTRASONIC_ECHO_PIN[N_ULTRASONIC_SENSORS] = {A1, A3};
 const float ULTRASONIC_MIN_DISTANCE_CM = 8.0f;
 const float ULTRASONIC_MAX_DISTANCE_CM = 60.0f;
 const unsigned long ULTRASONIC_ECHO_TIMEOUT_US = 6000UL;
-const unsigned long ULTRASONIC_TRIGGER_INTERVAL_MS = 65UL;
+// Keep at least ~60ms between HC-SR04 pings to reduce acoustic cross-talk.
+const unsigned long ULTRASONIC_TRIGGER_INTERVAL_MS = 60UL;
+
+// Adaptive EMA: smoother for small fluctuations, faster response to hand motion.
 const float ULTRASONIC_FILTER_ALPHA = 0.35f;
+const float ULTRASONIC_FILTER_ALPHA_FAST = 0.70f;
+const float ULTRASONIC_FILTER_FAST_THRESHOLD_CM = 3.0f;
 const byte ULTRASONIC_INVALID_READINGS_TO_RELEASE = 2;
 
 float ultrasonicDistanceCm[N_ULTRASONIC_SENSORS] = {0.0f, 0.0f};
@@ -121,10 +122,14 @@ const unsigned long BUTTON_DEBOUNCE_MS = 25UL;
 enum : byte {
   SENSOR_MODE_NOTES = 0,
   SENSOR_MODE_VELOCITY = 1,
-  SENSOR_MODE_CC = 2
+  SENSOR_MODE_CC = 2,
+  SENSOR_MODE_PITCH_BEND = 3
 };
 
-const char* sensorModeNames[3] = {"NOTES", "VELOCITY", "CC"};
+const byte SENSOR_MODE_COUNT = 4;
+const char* sensorModeNames[SENSOR_MODE_COUNT] = {
+  "NOTES", "VELOCITY", "CC", "PITCH"
+};
 byte sensorMode[N_ULTRASONIC_SENSORS] = {
   SENSOR_MODE_NOTES,
   SENSOR_MODE_CC
@@ -132,41 +137,57 @@ byte sensorMode[N_ULTRASONIC_SENSORS] = {
 byte selectedSensor = SENSOR_1;
 
 /////////////////////////////////////////////
-// MUSICAL CONFIGURATION (shared by sensors in NOTES mode)
-byte midiChannel = 0;       // MIDI channel is zero-based internally (0..15).
+// GLOBAL MUSICAL CONFIGURATION
+// Root note and scale remain global; octave and MIDI channel are per sensor.
 byte rootPitchClass = 0;    // C=0, C#=1 ... B=11.
 byte scaleModeIndex = 0;    // Major by default.
-byte octaveIndex = 2;       // Center position = no octave transposition.
+byte sensorOctaveIndex[N_ULTRASONIC_SENSORS] = {2, 2};
+byte sensorMidiChannel[N_ULTRASONIC_SENSORS] = {0, 0}; // MIDI channels 1 and 1.
 const int8_t octaveOffsets[5] = {-24, -12, 0, 12, 24};
-
-const byte SCALE_COUNT = 6;
-const byte SCALE_NOTE_COUNT = 14;
-const char* scaleNames[SCALE_COUNT] = {
-  "Major", "Minor", "HarmMin", "MinPent", "MajPent", "Whole"
-};
 
 const char* noteNames[12] = {
   "C", "C#", "D", "D#", "E", "F",
   "F#", "G", "G#", "A", "A#", "B"
 };
 
-// Scale intervals over two octaves. These include the scales active in the
-// original project plus Aeolian (natural minor) and major pentatonic, which
-// were present as commented-out scale definitions in the original source.
-const int8_t scaleIntervals[SCALE_COUNT][SCALE_NOTE_COUNT] = {
-  // Major / Ionian
-  {0, 2, 4, 5, 7, 9, 11, 12, 14, 16, 17, 19, 21, 23},
-  // Natural minor / Aeolian
-  {0, 2, 3, 5, 7, 8, 10, 12, 14, 15, 17, 19, 20, 22},
-  // Harmonic minor
-  {0, 2, 3, 5, 7, 8, 11, 12, 14, 15, 17, 19, 20, 23},
-  // Minor pentatonic
-  {0, 3, 5, 7, 10, 12, 15, 17, 19, 22, 24, 27, 29, 31},
-  // Major pentatonic
-  {0, 2, 4, 7, 9, 12, 14, 16, 19, 21, 24, 26, 28, 31},
-  // Whole tone
-  {0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26}
+// Every scale spans exactly two octaves (0..24 semitones).
+// The number of selectable scale notes depends on the selected scale.
+const byte SCALE_COUNT = 7;
+const byte SCALE_MAX_NOTE_COUNT = 25;
+const byte scaleNoteCounts[SCALE_COUNT] = {
+  15, // Major: 7 notes per octave, plus the closing root.
+  15, // Natural minor / Aeolian.
+  15, // Harmonic minor.
+  11, // Minor pentatonic.
+  11, // Major pentatonic.
+  13, // Whole tone.
+  25  // Chromatic: every semitone.
 };
+const char* scaleNames[SCALE_COUNT] = {
+  "Major", "Minor", "HarmMin", "MinPent", "MajPent", "Whole", "Chromatic"
+};
+
+const int8_t scaleIntervals[SCALE_COUNT][SCALE_MAX_NOTE_COUNT] = {
+  // Major / Ionian: 2 octaves.
+  {0, 2, 4, 5, 7, 9, 11, 12, 14, 16, 17, 19, 21, 23, 24},
+  // Natural minor / Aeolian: 2 octaves.
+  {0, 2, 3, 5, 7, 8, 10, 12, 14, 15, 17, 19, 20, 22, 24},
+  // Harmonic minor: 2 octaves.
+  {0, 2, 3, 5, 7, 8, 11, 12, 14, 15, 17, 19, 20, 23, 24},
+  // Minor pentatonic: 2 octaves.
+  {0, 3, 5, 7, 10, 12, 15, 17, 19, 22, 24},
+  // Major pentatonic: 2 octaves.
+  {0, 2, 4, 7, 9, 12, 14, 16, 19, 21, 24},
+  // Whole tone: 2 octaves.
+  {0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24},
+  // Chromatic: every semitone across 2 octaves.
+  {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+   13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24}
+};
+
+// Hysteresis is expressed as a fraction of one scale-step interval.
+const float NOTE_HYSTERESIS_STEPS = 0.15f;
+int8_t currentScalePosition[N_ULTRASONIC_SENSORS] = {-1, -1};
 
 /////////////////////////////////////////////
 // VELOCITY AND MIDI CC CONFIGURATION
@@ -174,6 +195,7 @@ const int8_t scaleIntervals[SCALE_COUNT][SCALE_NOTE_COUNT] = {
 byte globalVelocity = 100;
 
 // Each sensor stores its own CC controller number. Both start at CC11.
+// All 0..127 values remain available intentionally, including reserved CCs.
 byte sensorCCNumber[N_ULTRASONIC_SENSORS] = {11, 11};
 byte sensorCCValue[N_ULTRASONIC_SENSORS] = {0, 0};
 int lastSentCCValue[N_ULTRASONIC_SENSORS] = {-1, -1};
@@ -181,12 +203,24 @@ int lastSentCCNumber[N_ULTRASONIC_SENSORS] = {-1, -1};
 int lastSentCCChannel[N_ULTRASONIC_SENSORS] = {-1, -1};
 const byte SUSTAIN_CC = 64;
 
+// Global Sustain is sent to each distinct sensor channel. The channel list is
+// synchronized if a sensor channel changes while the button remains pressed.
+bool sustainIsPressed = false;
+byte sustainChannels[N_ULTRASONIC_SENSORS] = {0, 0};
+byte sustainChannelCount = 0;
+
 /////////////////////////////////////////////
-// ACTIVE MIDI NOTE STATE (one note per sensor)
+// ACTIVE MIDI NOTE / PITCH BEND STATE
+// One active note per sensor; note channels are remembered for proper Note Off.
 int activeNote[N_ULTRASONIC_SENSORS] = {-1, -1};
 byte activeNoteChannel[N_ULTRASONIC_SENSORS] = {0, 0};
 int lastPlayedNote[N_ULTRASONIC_SENSORS] = {-1, -1};
 unsigned long noteStoppedAt[N_ULTRASONIC_SENSORS] = {0, 0};
+
+const int PITCH_BEND_CENTER = 8192;
+const byte PITCH_BEND_RANGE_SEMITONES = 12;
+const int PITCH_BEND_UPDATE_THRESHOLD = 4;
+int lastPitchBendValue[N_ULTRASONIC_SENSORS] = {-1, -1};
 
 /////////////////////////////////////////////
 // DISPLAY TIMING
@@ -196,8 +230,6 @@ unsigned long configFlashUntil = 0;
 unsigned long lastNoteScreenUntil = 0;
 byte lastNoteSensor = SENSOR_1;
 unsigned long lastDisplayRefreshAt = 0;
-bool sustainIsPressed = false;
-byte sustainChannel = 0;
 
 /////////////////////////////////////////////
 // GENERAL SCALING

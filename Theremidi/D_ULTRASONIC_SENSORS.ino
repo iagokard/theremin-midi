@@ -33,6 +33,7 @@ void updateUltrasonicSensorState(byte sensorIndex, float newDistanceCm) {
     if (ultrasonicInvalidReadings[sensorIndex] >= ULTRASONIC_INVALID_READINGS_TO_RELEASE) {
       ultrasonicSensorActive[sensorIndex] = false;
       ultrasonicFilterInitialized[sensorIndex] = false;
+      currentScalePosition[sensorIndex] = -1;
     }
 
 #ifdef DEBUG
@@ -50,9 +51,14 @@ void updateUltrasonicSensorState(byte sensorIndex, float newDistanceCm) {
     ultrasonicDistanceCm[sensorIndex] = newDistanceCm;
     ultrasonicFilterInitialized[sensorIndex] = true;
   } else {
-    ultrasonicDistanceCm[sensorIndex] +=
-      ULTRASONIC_FILTER_ALPHA *
-      (newDistanceCm - ultrasonicDistanceCm[sensorIndex]);
+    const float difference = newDistanceCm - ultrasonicDistanceCm[sensorIndex];
+    const bool largeChange =
+      difference >= ULTRASONIC_FILTER_FAST_THRESHOLD_CM ||
+      difference <= -ULTRASONIC_FILTER_FAST_THRESHOLD_CM;
+    const float alpha = largeChange
+      ? ULTRASONIC_FILTER_ALPHA_FAST
+      : ULTRASONIC_FILTER_ALPHA;
+    ultrasonicDistanceCm[sensorIndex] += alpha * difference;
   }
 
   ultrasonicSensorActive[sensorIndex] = true;
@@ -67,16 +73,40 @@ void updateUltrasonicSensorState(byte sensorIndex, float newDistanceCm) {
 #endif
 }
 
-int distanceToScalePosition(float distanceCm) {
-  int position = (int)round(fscale(
+float distanceToScalePositionFloat(float distanceCm, byte noteCount) {
+  const int lastPosition = (int)noteCount - 1;
+  float position = fscale(
     ULTRASONIC_MIN_DISTANCE_CM,
     ULTRASONIC_MAX_DISTANCE_CM,
-    SCALE_NOTE_COUNT - 1,
+    lastPosition,
     0,
     distanceCm,
     IR_curve
-  ));
-  return constrain(position, 0, SCALE_NOTE_COUNT - 1);
+  );
+  return constrain(position, 0.0f, (float)lastPosition);
+}
+
+// Schmitt-style note selection prevents repeated Note On/Off events when a
+// hand hovers around the boundary between adjacent scale positions.
+int distanceToScalePosition(byte sensorIndex) {
+  const byte noteCount = scaleNoteCounts[scaleModeIndex];
+  const int lastPosition = (int)noteCount - 1;
+  const float rawPosition = distanceToScalePositionFloat(
+    ultrasonicDistanceCm[sensorIndex],
+    noteCount
+  );
+
+  int stablePosition = currentScalePosition[sensorIndex];
+  if (stablePosition < 0 || stablePosition > lastPosition) {
+    stablePosition = (int)round(rawPosition);
+  } else if (rawPosition > stablePosition + 0.5f + NOTE_HYSTERESIS_STEPS ||
+             rawPosition < stablePosition - 0.5f - NOTE_HYSTERESIS_STEPS) {
+    stablePosition = (int)round(rawPosition);
+  }
+
+  stablePosition = constrain(stablePosition, 0, lastPosition);
+  currentScalePosition[sensorIndex] = (int8_t)stablePosition;
+  return stablePosition;
 }
 
 byte distanceToMidiValue(float distanceCm, byte minimumValue) {
@@ -92,17 +122,43 @@ byte distanceToMidiValue(float distanceCm, byte minimumValue) {
   return (byte)value;
 }
 
+int distanceToPitchBendValue(float distanceCm) {
+  // Near the sensor = maximum positive bend; far = maximum negative bend.
+  const int value = (int)round(fscale(
+    ULTRASONIC_MIN_DISTANCE_CM,
+    ULTRASONIC_MAX_DISTANCE_CM,
+    16383,
+    0,
+    distanceCm,
+    IR_curve
+  ));
+  return constrain(value, 0, 16383);
+}
+
 int calculateNoteForSensor(byte sensorIndex) {
-  const int scalePosition = distanceToScalePosition(ultrasonicDistanceCm[sensorIndex]);
-  const int rootMidiNote = 48 + rootPitchClass + octaveOffsets[octaveIndex];
+  const int scalePosition = distanceToScalePosition(sensorIndex);
+  const int rootMidiNote = 48 + rootPitchClass + octaveOffsets[sensorOctaveIndex[sensorIndex]];
   const int note = rootMidiNote + scaleIntervals[scaleModeIndex][scalePosition];
   return constrain(note, 0, 127);
+}
+
+int calculatePitchBendBaseNote(byte sensorIndex) {
+  const int rootMidiNote = 48 + rootPitchClass + octaveOffsets[sensorOctaveIndex[sensorIndex]];
+  return constrain(rootMidiNote, 0, 127);
 }
 
 bool otherSensorHoldsSameNote(byte sensorIndex, int noteNumber, byte channel) {
   const byte otherSensor = (sensorIndex == SENSOR_1) ? SENSOR_2 : SENSOR_1;
   return activeNote[otherSensor] == noteNumber &&
          activeNoteChannel[otherSensor] == channel;
+}
+
+bool otherSensorUsesPitchBendChannel(byte sensorIndex, byte channel) {
+  const byte otherSensor = (sensorIndex == SENSOR_1) ? SENSOR_2 : SENSOR_1;
+  return sensorMode[otherSensor] == SENSOR_MODE_PITCH_BEND &&
+         activeNote[otherSensor] >= 0 &&
+         activeNoteChannel[otherSensor] == channel &&
+         lastPitchBendValue[otherSensor] >= 0;
 }
 
 void stopNoteForSensor(byte sensorIndex) {
@@ -121,8 +177,24 @@ void stopNoteForSensor(byte sensorIndex) {
     lastPlayedNote[sensorIndex] = activeNote[sensorIndex];
     activeNote[sensorIndex] = -1;
     noteStoppedAt[sensorIndex] = millis();
+    lastNoteSensor = sensorIndex;
     lastNoteScreenUntil = millis() + DISPLAY_NOTE_RELEASE_DELAY_MS;
   }
+}
+
+void stopPitchBendForSensor(byte sensorIndex) {
+  const byte previousChannel = activeNoteChannel[sensorIndex];
+  stopNoteForSensor(sensorIndex);
+
+  // Pitch Bend is channel-wide. Do not center it while the other sensor is
+  // actively using Pitch Bend on the same channel.
+  if (lastPitchBendValue[sensorIndex] >= 0 &&
+      !otherSensorUsesPitchBendChannel(sensorIndex, previousChannel)) {
+    pitchBend(previousChannel, PITCH_BEND_CENTER);
+    MidiUSB.flush();
+  }
+
+  lastPitchBendValue[sensorIndex] = -1;
 }
 
 void processNoteSensor(byte sensorIndex) {
@@ -132,16 +204,17 @@ void processNoteSensor(byte sensorIndex) {
   }
 
   const int nextNote = calculateNoteForSensor(sensorIndex);
-  if (activeNote[sensorIndex] != nextNote || activeNoteChannel[sensorIndex] != midiChannel) {
+  const byte channel = sensorMidiChannel[sensorIndex];
+  if (activeNote[sensorIndex] != nextNote || activeNoteChannel[sensorIndex] != channel) {
     stopNoteForSensor(sensorIndex);
 
-    if (!otherSensorHoldsSameNote(sensorIndex, nextNote, midiChannel)) {
-      noteOn(midiChannel, (byte)nextNote, globalVelocity);
+    if (!otherSensorHoldsSameNote(sensorIndex, nextNote, channel)) {
+      noteOn(channel, (byte)nextNote, globalVelocity);
       MidiUSB.flush();
     }
 
     activeNote[sensorIndex] = nextNote;
-    activeNoteChannel[sensorIndex] = midiChannel;
+    activeNoteChannel[sensorIndex] = channel;
     lastPlayedNote[sensorIndex] = nextNote;
     lastNoteSensor = sensorIndex;
     noteStoppedAt[sensorIndex] = 0;
@@ -153,10 +226,61 @@ void processNoteSensor(byte sensorIndex) {
     Serial.print(F(" Note On: "));
     Serial.print(noteNames[nextNote % 12]);
     Serial.print((nextNote / 12) - 1);
+    Serial.print(F(" channel="));
+    Serial.print(channel + 1);
     Serial.print(F(" velocity="));
     Serial.println(globalVelocity);
 #endif
   }
+}
+
+void processPitchBendSensor(byte sensorIndex) {
+  if (!ultrasonicSensorActive[sensorIndex]) {
+    stopPitchBendForSensor(sensorIndex);
+    return;
+  }
+
+  const int baseNote = calculatePitchBendBaseNote(sensorIndex);
+  const byte channel = sensorMidiChannel[sensorIndex];
+
+  if (activeNote[sensorIndex] != baseNote || activeNoteChannel[sensorIndex] != channel) {
+    stopPitchBendForSensor(sensorIndex);
+
+    // Configure the receiver for a +/-12-semitone bend, then establish the
+    // bend before Note On to avoid a brief note at the old pitch.
+    configurePitchBendRange(channel);
+    const int bendValue = distanceToPitchBendValue(ultrasonicDistanceCm[sensorIndex]);
+    pitchBend(channel, bendValue);
+    MidiUSB.flush();
+
+    noteOn(channel, (byte)baseNote, globalVelocity);
+    MidiUSB.flush();
+
+    activeNote[sensorIndex] = baseNote;
+    activeNoteChannel[sensorIndex] = channel;
+    lastPlayedNote[sensorIndex] = baseNote;
+    lastNoteSensor = sensorIndex;
+    noteStoppedAt[sensorIndex] = 0;
+    lastNoteScreenUntil = 0;
+    lastPitchBendValue[sensorIndex] = bendValue;
+  } else {
+    const int bendValue = distanceToPitchBendValue(ultrasonicDistanceCm[sensorIndex]);
+    if (lastPitchBendValue[sensorIndex] < 0 ||
+        abs(bendValue - lastPitchBendValue[sensorIndex]) >= PITCH_BEND_UPDATE_THRESHOLD) {
+      pitchBend(channel, bendValue);
+      MidiUSB.flush();
+      lastPitchBendValue[sensorIndex] = bendValue;
+    }
+  }
+
+#ifdef DEBUG
+  Serial.print(F("Sensor "));
+  Serial.print(sensorIndex + 1);
+  Serial.print(F(" Pitch Bend="));
+  Serial.print(lastPitchBendValue[sensorIndex]);
+  Serial.print(F(" channel="));
+  Serial.println(channel + 1);
+#endif
 }
 
 void clearSensorCC(byte sensorIndex) {
@@ -178,16 +302,17 @@ void clearSensorCC(byte sensorIndex) {
 
 void sendSensorCC(byte sensorIndex, byte value) {
   sensorCCValue[sensorIndex] = value;
+  const byte channel = sensorMidiChannel[sensorIndex];
 
   if (lastSentCCValue[sensorIndex] != value ||
       lastSentCCNumber[sensorIndex] != sensorCCNumber[sensorIndex] ||
-      lastSentCCChannel[sensorIndex] != midiChannel) {
-    controlChange(midiChannel, sensorCCNumber[sensorIndex], value);
+      lastSentCCChannel[sensorIndex] != channel) {
+    controlChange(channel, sensorCCNumber[sensorIndex], value);
     MidiUSB.flush();
 
     lastSentCCValue[sensorIndex] = value;
     lastSentCCNumber[sensorIndex] = sensorCCNumber[sensorIndex];
-    lastSentCCChannel[sensorIndex] = midiChannel;
+    lastSentCCChannel[sensorIndex] = channel;
 
 #ifdef DEBUG
     Serial.print(F("Sensor "));
@@ -195,7 +320,9 @@ void sendSensorCC(byte sensorIndex, byte value) {
     Serial.print(F(" CC"));
     Serial.print(sensorCCNumber[sensorIndex]);
     Serial.print(F(" = "));
-    Serial.println(value);
+    Serial.print(value);
+    Serial.print(F(" channel="));
+    Serial.println(channel + 1);
 #endif
   }
 }
@@ -209,8 +336,7 @@ void processCCSensor(byte sensorIndex) {
 }
 
 void processVelocitySensor(byte sensorIndex) {
-  // Intentionally do nothing when the hand leaves the zone: the last valid
-  // global velocity is retained until a new valid distance is measured.
+  // Intentionally retain the last valid global velocity when the hand leaves.
   if (!ultrasonicSensorActive[sensorIndex]) return;
 
   globalVelocity = distanceToMidiValue(ultrasonicDistanceCm[sensorIndex], 1);
@@ -236,11 +362,15 @@ void processSensorByMode(byte sensorIndex) {
       stopNoteForSensor(sensorIndex);
       processCCSensor(sensorIndex);
       break;
+
+    case SENSOR_MODE_PITCH_BEND:
+      processPitchBendSensor(sensorIndex);
+      break;
   }
 }
 
-// Alternates sensors and keeps at least 65ms between trigger pulses.
-// Each sensor is therefore sampled approximately every 130ms.
+// Alternates sensors and keeps at least 60ms between trigger pulses to reduce
+// acoustic cross-talk. Each sensor is therefore sampled approximately every 120ms.
 void serviceUltrasonicSensors() {
   static byte nextSensor = SENSOR_1;
   static bool firstMeasurement = true;

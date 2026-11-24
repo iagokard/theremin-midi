@@ -1,0 +1,28 @@
+THEREMIDI HC-SR04 — REVISÃO v3
+
+Alterações:
+- Oitava individual por sensor (deslocamento de -2 a +2 oitavas).
+- Canal MIDI individual por sensor (canais 1 a 16).
+- Nota-base e escala continuam globais.
+- Modos independentes agora são NOTES, VELOCITY, CC e PITCH.
+- Novo modo PITCH inicia uma nota-base e controla a afinação com Pitch Bend.
+- Pitch Bend enviado em 14 bits e com RPN 0,0 para sensibilidade de +/-12 semitons.
+- A escala Chromatic foi adicionada.
+- Todas as escalas de snapping abrangem duas oitavas; cada escala usa sua quantidade real de posições.
+- Filtro EMA adaptativo: alpha 0.35 para pequenas variações e 0.70 para movimentos de pelo menos 3 cm.
+- Histerese de 0.15 posição para reduzir alternância indesejada de notas nas fronteiras.
+- Sustain continua global e agora envia CC64 para todos os canais distintos dos sensores, sincronizando mudanças de canal enquanto o botão está pressionado.
+- Todos os números CC de 0 a 127 continuam selecionáveis intencionalmente.
+- OLED atualizado para mostrar oitava/canal do sensor selecionado e informações do modo PITCH.
+
+Padrões:
+- Sensor 1 = NOTES; Sensor 2 = CC11.
+- Ambos iniciam no canal MIDI 1 e com deslocamento de oitava zero.
+- Nota-base C, escala Major e velocity 100.
+
+Atenções:
+- Pitch Bend é compartilhado por todas as notas no mesmo canal MIDI. Use canais diferentes quando quiser controlar instrumentos independentemente.
+- O instrumento receptor precisa aceitar RPN Pitch Bend Sensitivity para obedecer automaticamente à faixa +/-12; caso contrário, configure a faixa manualmente no instrumento/DAW.
+- Cada HC-SR04 é atualizado aproximadamente a cada 120 ms para manter 60 ms entre disparos e reduzir interferência acústica.
+- Alguns números CC são comandos especiais e podem provocar efeitos globais no sintetizador/DAW. Eles permanecem disponíveis por escolha de design.
+- O esquema original continua representando hardware diferente (Pro Micro e sensores Sharp); use a pinagem HC-SR04/Leonardo no README atualizado.
