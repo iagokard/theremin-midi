@@ -1,7 +1,9 @@
 # Theremidi — HC-SR04 / Arduino Leonardo
 
-This repository contains the adapted Theremidi project for an Arduino Leonardo (ATmega32U4), two HC-SR04 ultrasonic sensors, USB MIDI, and an SSD1306 I2C OLED.
+This folder contains the adapted Theremidi project for an Arduino Leonardo (ATmega32U4) with two HC-SR04 ultrasonic sensors, USB MIDI, and an optional SSD1306 I2C OLED.
 
-**Read `README_HC-SR04_PT-BR.md` before wiring or configuring the instrument.** The original Fritzing schematic in `Schematic/` depicts the original Pro Micro and Sharp analog sensors; it is not the wiring diagram for this HC-SR04/Leonardo adaptation.
+**Read `README_HC-SR04_PT-BR.md` before wiring.** The original Fritzing schematic in `Schematic/` depicts the original Pro Micro and Sharp analog sensors; it is not the wiring diagram for this HC-SR04/Leonardo adaptation.
 
-The current firmware provides four independent sensor modes (NOTES, VELOCITY, CC, PITCH), independent MIDI channel and octave settings for each sensor, global root-note and scale settings, a chromatic scale, and continuous Pitch Bend mode. The Portuguese README documents the controls, MIDI behavior, calibration, and hardware pinout. See `CHANGELOG-v3.txt` for this revision's changes.
+The adapted firmware gives each sensor an independent mode (NOTES, VELOCITY, CC, PITCH), MIDI channel, octave, and CC number. Root note and scale remain global. It includes a chromatic scale, continuous Pitch Bend, and independent two-sensor note output. See `README_HC-SR04_PT-BR.md` for pin assignments and button behavior.
+
+For the ATmega32U4 flash-optimized build, use the bundled `Libs/Adafruit_SSD1306` copy: it omits the unused Adafruit startup splash. The firmware also uses a small PROGMEM lookup table instead of `pow()` and avoids `snprintf()` in OLED rendering. These changes retain all four sensor modes.

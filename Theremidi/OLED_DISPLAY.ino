@@ -1,6 +1,27 @@
 #ifdef USING_DISPLAY
 
-#include <stdio.h>
+// Draw a note name and octave centered without snprintf()/stdio, which are
+// unnecessarily expensive in flash on the ATmega32U4.
+void drawCenteredNote(int noteNumber, byte y) {
+  const byte pitchClass = (byte)(noteNumber % 12);
+  const char* noteName = noteNames[pitchClass];
+  const bool isSharp = (pitchClass == 1 || pitchClass == 3 ||
+                        pitchClass == 6 || pitchClass == 8 || pitchClass == 10);
+  const byte characterCount = isSharp ? 3 : 2; // note name + octave digit
+  const int textWidth = characterCount * 18;     // 6px font * text size 3
+  display.setTextSize(3);
+  display.setCursor((128 - textWidth) / 2, y);
+  display.print(noteName);
+  display.print((noteNumber / 12) - 1);
+}
+
+void drawCenteredValue(byte value, byte y) {
+  const byte characterCount = value >= 100 ? 3 : (value >= 10 ? 2 : 1);
+  const int textWidth = characterCount * 18; // 6px font * text size 3
+  display.setTextSize(3);
+  display.setCursor((128 - textWidth) / 2, y);
+  display.print(value);
+}
 
 void requestConfigDisplay() {
   configFlashUntil = millis() + DISPLAY_CONFIG_FLASH_MS;
@@ -77,14 +98,7 @@ void drawNoteScreen(byte sensorIndex, int noteNumber) {
   display.print(sensorIndex + 1);
   display.print(F("  MIDI NOTE"));
 
-  char noteText[16];
-  snprintf(noteText, sizeof(noteText), "%s%d", noteNames[noteNumber % 12], (noteNumber / 12) - 1);
-  display.setTextSize(3);
-  int16_t x1, y1;
-  uint16_t w, h;
-  display.getTextBounds(noteText, 0, 0, &x1, &y1, &w, &h);
-  display.setCursor((128 - w) / 2, 17);
-  display.print(noteText);
+  drawCenteredNote(noteNumber, 17);
 
   display.setTextSize(1);
   display.setCursor(0, 46);
@@ -105,14 +119,7 @@ void drawPitchBendScreen(byte sensorIndex, int noteNumber) {
   display.print(sensorIndex + 1);
   display.print(F("  PITCH BEND"));
 
-  char noteText[16];
-  snprintf(noteText, sizeof(noteText), "%s%d", noteNames[noteNumber % 12], (noteNumber / 12) - 1);
-  display.setTextSize(3);
-  int16_t x1, y1;
-  uint16_t w, h;
-  display.getTextBounds(noteText, 0, 0, &x1, &y1, &w, &h);
-  display.setCursor((128 - w) / 2, 17);
-  display.print(noteText);
+  drawCenteredNote(noteNumber, 17);
 
   display.setTextSize(1);
   display.setCursor(0, 54);
@@ -131,14 +138,7 @@ void drawVelocityScreen(byte sensorIndex) {
   display.print(sensorIndex + 1);
   display.print(F("  VELOCITY"));
 
-  char valueText[5];
-  snprintf(valueText, sizeof(valueText), "%u", (unsigned int)globalVelocity);
-  display.setTextSize(3);
-  int16_t x1, y1;
-  uint16_t w, h;
-  display.getTextBounds(valueText, 0, 0, &x1, &y1, &w, &h);
-  display.setCursor((128 - w) / 2, 20);
-  display.print(valueText);
+  drawCenteredValue(globalVelocity, 20);
 
   display.setTextSize(1);
   display.setCursor(0, 54);
@@ -152,14 +152,7 @@ void drawCCScreen(byte sensorIndex) {
   display.print(sensorIndex + 1);
   display.print(F("  MIDI CC"));
 
-  char valueText[5];
-  snprintf(valueText, sizeof(valueText), "%u", (unsigned int)sensorCCValue[sensorIndex]);
-  display.setTextSize(3);
-  int16_t x1, y1;
-  uint16_t w, h;
-  display.getTextBounds(valueText, 0, 0, &x1, &y1, &w, &h);
-  display.setCursor((128 - w) / 2, 18);
-  display.print(valueText);
+  drawCenteredValue(sensorCCValue[sensorIndex], 18);
 
   display.setTextSize(1);
   display.setCursor(0, 53);

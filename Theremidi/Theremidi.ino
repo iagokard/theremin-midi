@@ -185,8 +185,8 @@ const int8_t scaleIntervals[SCALE_COUNT][SCALE_MAX_NOTE_COUNT] = {
    13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24}
 };
 
-// Hysteresis is expressed as a fraction of one scale-step interval.
-const float NOTE_HYSTERESIS_STEPS = 0.15f;
+// Q8 threshold equivalent to the original 0.5 + 0.15 scale-step boundary.
+const byte NOTE_HYSTERESIS_Q8 = 166;
 int8_t currentScalePosition[N_ULTRASONIC_SENSORS] = {-1, -1};
 
 /////////////////////////////////////////////
@@ -233,4 +233,3 @@ unsigned long lastDisplayRefreshAt = 0;
 
 /////////////////////////////////////////////
 // GENERAL SCALING
-float IR_curve = 1.0f; // Kept as the original project's curve parameter.

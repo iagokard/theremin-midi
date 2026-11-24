@@ -180,3 +180,10 @@ Selecione **Arduino Leonardo** como placa. O firmware utiliza o USB nativo do AT
 - Filtro ultrassônico adaptativo e histerese para reduzir oscilações de notas.
 - Sustain global aplicado a todos os canais distintos dos sensores.
 - Números CC 0–127 mantidos disponíveis intencionalmente.
+
+
+## Otimização de flash para Arduino Leonardo (v3.1)
+
+Esta revisão reduz o uso de memória de programa sem remover funcionalidades. O mapeamento não usa mais `pow()`; uma tabela de consulta em PROGMEM aproxima a curva original, com interpolação inteira. A imagem de abertura da biblioteca Adafruit SSD1306 também foi desativada nesta cópia porque o firmware limpa a tela logo após inicializá-la. Os quatro modos dos sensores, a escala cromática, Pitch Bend, a configuração independente de canal/oitava, os filtros e o display permanecem habilitados.
+
+A pasta `Libs/Adafruit_SSD1306` contém a biblioteca Adafruit SSD1306 2.3.0 com a pequena personalização para omitir o splash. Para aproveitar essa redução, verifique na saída detalhada de compilação qual instalação da biblioteca a Arduino IDE utiliza e substitua nela o `Adafruit_SSD1306.cpp` pela cópia deste repositório; reinicie a IDE depois. Se a sua versão instalada não for 2.3.0, não substitua o arquivo inteiro: aplique as duas alterações documentadas em `PATCHES/Adafruit_SSD1306_no_splash.patch` (remover o include de `splash.h` e o bloco que desenha o bitmap). Uma atualização da biblioteca pode sobrescrever essa otimização. A renderização OLED também evita `snprintf()` para não puxar código desnecessário de `stdio`.

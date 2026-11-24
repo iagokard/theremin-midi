@@ -73,17 +73,38 @@ void updateUltrasonicSensorState(byte sensorIndex, float newDistanceCm) {
 #endif
 }
 
-float distanceToScalePositionFloat(float distanceCm, byte noteCount) {
-  const int lastPosition = (int)noteCount - 1;
-  float position = fscale(
-    ULTRASONIC_MIN_DISTANCE_CM,
-    ULTRASONIC_MAX_DISTANCE_CM,
-    lastPosition,
-    0,
-    distanceCm,
-    IR_curve
+// Approximation of the original fscale curve (pow(10, -0.1) exponent)
+// using a 65-point lookup table. This avoids pulling the large AVR libm pow()
+// implementation into the Leonardo firmware while retaining a close response.
+#include <avr/pgmspace.h>
+
+const uint16_t DISTANCE_CURVE_TABLE[65] PROGMEM = {
+  0, 38, 65, 90, 113, 135, 156, 177,
+  196, 216, 234, 253, 271, 289, 306, 323,
+  340, 357, 374, 390, 406, 423, 438, 454,
+  470, 485, 501, 516, 531, 546, 561, 576,
+  590, 605, 620, 634, 648, 663, 677, 691,
+  705, 719, 733, 747, 760, 774, 788, 801,
+  815, 828, 842, 855, 868, 882, 895, 908,
+  921, 934, 947, 960, 973, 986, 998, 1011,
+  1024
+};
+
+// Returns the curved distance as a fixed-point value in the range 0..1024.
+// 0 means the hand is nearest to the sensor; 1024 means farthest away.
+uint16_t distanceToCurve1024(float distanceCm) {
+  if (distanceCm <= ULTRASONIC_MIN_DISTANCE_CM) return 0;
+  if (distanceCm >= ULTRASONIC_MAX_DISTANCE_CM) return 1024;
+
+  const uint16_t scaled = (uint16_t)(
+    (distanceCm - ULTRASONIC_MIN_DISTANCE_CM) *
+    (16384.0f / (ULTRASONIC_MAX_DISTANCE_CM - ULTRASONIC_MIN_DISTANCE_CM))
   );
-  return constrain(position, 0.0f, (float)lastPosition);
+  const byte index = (byte)(scaled >> 8);
+  const byte fraction = (byte)(scaled & 0xFF);
+  const uint16_t lower = pgm_read_word(&DISTANCE_CURVE_TABLE[index]);
+  const uint16_t upper = pgm_read_word(&DISTANCE_CURVE_TABLE[index + 1]);
+  return lower + (uint16_t)(((uint32_t)(upper - lower) * fraction + 128) >> 8);
 }
 
 // Schmitt-style note selection prevents repeated Note On/Off events when a
@@ -91,48 +112,38 @@ float distanceToScalePositionFloat(float distanceCm, byte noteCount) {
 int distanceToScalePosition(byte sensorIndex) {
   const byte noteCount = scaleNoteCounts[scaleModeIndex];
   const int lastPosition = (int)noteCount - 1;
-  const float rawPosition = distanceToScalePositionFloat(
-    ultrasonicDistanceCm[sensorIndex],
-    noteCount
-  );
+  const uint16_t curve = distanceToCurve1024(ultrasonicDistanceCm[sensorIndex]);
 
+  // Q8 fixed point: near = last position, far = position zero.
+  const uint32_t positionQ8 =
+    ((uint32_t)(1024 - curve) * lastPosition * 256UL + 512UL) / 1024UL;
   int stablePosition = currentScalePosition[sensorIndex];
+
+  // 0.65 of a scale step (0.5 rounding boundary + 0.15 hysteresis).
+  const int hysteresisQ8 = NOTE_HYSTERESIS_Q8;
   if (stablePosition < 0 || stablePosition > lastPosition) {
-    stablePosition = (int)round(rawPosition);
-  } else if (rawPosition > stablePosition + 0.5f + NOTE_HYSTERESIS_STEPS ||
-             rawPosition < stablePosition - 0.5f - NOTE_HYSTERESIS_STEPS) {
-    stablePosition = (int)round(rawPosition);
+    stablePosition = (int)((positionQ8 + 128UL) >> 8);
+  } else if (positionQ8 > (uint32_t)(stablePosition * 256 + hysteresisQ8) ||
+             (int32_t)positionQ8 < (int32_t)(stablePosition * 256 - hysteresisQ8)) {
+    stablePosition = (int)((positionQ8 + 128UL) >> 8);
   }
 
-  stablePosition = constrain(stablePosition, 0, lastPosition);
+  if (stablePosition < 0) stablePosition = 0;
+  if (stablePosition > lastPosition) stablePosition = lastPosition;
   currentScalePosition[sensorIndex] = (int8_t)stablePosition;
   return stablePosition;
 }
 
 byte distanceToMidiValue(float distanceCm, byte minimumValue) {
-  int value = (int)round(fscale(
-    ULTRASONIC_MIN_DISTANCE_CM,
-    ULTRASONIC_MAX_DISTANCE_CM,
-    127,
-    minimumValue,
-    distanceCm,
-    IR_curve
-  ));
-  value = constrain(value, minimumValue, 127);
-  return (byte)value;
+  const uint16_t curve = distanceToCurve1024(distanceCm);
+  const uint16_t span = (uint16_t)(127 - minimumValue);
+  return (byte)(minimumValue +
+    ((uint32_t)(1024 - curve) * span + 512UL) / 1024UL);
 }
 
 int distanceToPitchBendValue(float distanceCm) {
-  // Near the sensor = maximum positive bend; far = maximum negative bend.
-  const int value = (int)round(fscale(
-    ULTRASONIC_MIN_DISTANCE_CM,
-    ULTRASONIC_MAX_DISTANCE_CM,
-    16383,
-    0,
-    distanceCm,
-    IR_curve
-  ));
-  return constrain(value, 0, 16383);
+  const uint16_t curve = distanceToCurve1024(distanceCm);
+  return (int)(((uint32_t)(1024 - curve) * 16383UL + 512UL) / 1024UL);
 }
 
 int calculateNoteForSensor(byte sensorIndex) {

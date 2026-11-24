@@ -26,3 +26,13 @@ Atenções:
 - Cada HC-SR04 é atualizado aproximadamente a cada 120 ms para manter 60 ms entre disparos e reduzir interferência acústica.
 - Alguns números CC são comandos especiais e podem provocar efeitos globais no sintetizador/DAW. Eles permanecem disponíveis por escolha de design.
 - O esquema original continua representando hardware diferente (Pro Micro e sensores Sharp); use a pinagem HC-SR04/Leonardo no README atualizado.
+
+
+## v3.1 - otimização de memória de programa (ATmega32U4)
+
+- Substituída a função de mapeamento baseada em `pow()` por uma LUT de 65 pontos em PROGMEM, com interpolação inteira. A curva original (expoente aproximado 0,7943) é preservada com pequena aproximação e sem incluir a implementação pesada de `pow()` da AVR libm.
+- Removidos `fscale()`, `clipValue()` e `IR_curve`, que deixaram de ser necessários.
+- Removida a imagem splash da inicialização da biblioteca Adafruit_SSD1306 modificada nesta cópia. O sketch já limpa e redesenha a tela imediatamente após `display.begin()`, portanto a tela de abertura não era utilizada.
+- Mantidos os quatro modos dos sensores (NOTES, VELOCITY, CC e PITCH), as sete escalas, Pitch Bend, oitavas/canais independentes, tela OLED, filtros e histerese.
+- A biblioteca Adafruit_SSD1306 desta cópia contém uma pequena modificação local: `begin()` não desenha mais o logotipo de splash. Uma reinstalação/atualização da biblioteca pode sobrescrever essa otimização.
+- Removido `snprintf()` da renderização OLED; notas e valores grandes são centralizados por largura calculada, reduzindo dependência de stdio/flash.
