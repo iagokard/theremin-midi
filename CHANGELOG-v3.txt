@@ -36,3 +36,14 @@ Atenções:
 - Mantidos os quatro modos dos sensores (NOTES, VELOCITY, CC e PITCH), as sete escalas, Pitch Bend, oitavas/canais independentes, tela OLED, filtros e histerese.
 - A biblioteca Adafruit_SSD1306 desta cópia contém uma pequena modificação local: `begin()` não desenha mais o logotipo de splash. Uma reinstalação/atualização da biblioteca pode sobrescrever essa otimização.
 - Removido `snprintf()` da renderização OLED; notas e valores grandes são centralizados por largura calculada, reduzindo dependência de stdio/flash.
+
+## v3.2 — calibração, display e controle
+
+- Distâncias mínima/próxima e máxima/distante agora são armazenadas independentemente por sensor.
+- D0/D1 substituem os antigos botões CC +/-10 e ajustam a distância máxima do sensor selecionado em passos de 1 cm.
+- OLED mostra os limites de distância e prioriza o sensor selecionado quando ambos estão tocando; se apenas um estiver ativo, mostra esse sensor.
+- A5 passou de Sustain momentâneo para toggle ON/OFF; OLED mostra SUS:ON/SUS:OFF.
+- `NOTE_RANGE_OCTAVES` permite escolher uma ou duas oitavas sem editar as tabelas de escala.
+- Pitch Bend padrão ampliado para +/-24 semitons (configurável em `PITCH_BEND_RANGE_SEMITONES`).
+- OLED calcula e mostra a nota temperada mais próxima estimada a partir da nota-base MIDI e do valor Pitch Bend enviado.
+- Criado `GUIA_CALIBRACAO_PT-BR.md` com localização dos parâmetros, faixa, resolução, filtro, histerese, Sustain e Pitch Bend.

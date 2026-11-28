@@ -20,14 +20,13 @@
     D12 Global root note -1 (C, C#, D ... B)
     D13 Global root note +1
     A4  Cycle global musical scale mode
-    A5  Global sustain (hold to sustain on both configured sensor channels)
+    A5  Toggle global Sustain ON/OFF (both configured sensor channels)
 
-  Optional CC step buttons (disabled by default):
-    D0  Selected sensor CC number -10
-    D1  Selected sensor CC number +10
+  Distance calibration buttons (enabled by default):
+    D0  Selected sensor maximum distance -1 cm
+    D1  Selected sensor maximum distance +1 cm
 
-  D0/D1 are reserved for the optional buttons. Enable them by changing
-  ENABLE_CC_STEP10_BUTTONS to 1. Do not use Serial1 while they are enabled.
+  D0/D1 are used as digital inputs; do not use Serial1 while enabled.
 
   OLED SSD1306 I2C on Leonardo: SDA=D2, SCL=D3.
 */
@@ -36,7 +35,7 @@
 // BOARD AND FEATURES
 #define ATMEGA32U4 1
 #define USING_DISPLAY 1
-#define ENABLE_CC_STEP10_BUTTONS 0  // Set to 1 to enable optional D0/D1 buttons.
+#define ENABLE_DISTANCE_CALIBRATION_BUTTONS 1  // D0/D1 adjust selected sensor far cutoff.
 // #define DEBUG 1
 
 /////////////////////////////////////////////
@@ -61,9 +60,19 @@ const byte SENSOR_2 = 1;
 const byte ULTRASONIC_TRIG_PIN[N_ULTRASONIC_SENSORS] = {A0, A2};
 const byte ULTRASONIC_ECHO_PIN[N_ULTRASONIC_SENSORS] = {A1, A3};
 
-// Initial playing zone; calibrate these values after the first physical tests.
-const float ULTRASONIC_MIN_DISTANCE_CM = 8.0f;
-const float ULTRASONIC_MAX_DISTANCE_CM = 60.0f;
+// Per-sensor playing zones. Edit the arrays to set each sensor's near/far cutoffs.
+// D0/D1 adjust only the selected sensor's maximum (far) cutoff at runtime.
+const float ULTRASONIC_DEFAULT_MIN_DISTANCE_CM = 8.0f;
+const float ULTRASONIC_DEFAULT_MAX_DISTANCE_CM = 60.0f;
+float ultrasonicMinDistanceCm[N_ULTRASONIC_SENSORS] = {
+  ULTRASONIC_DEFAULT_MIN_DISTANCE_CM, ULTRASONIC_DEFAULT_MIN_DISTANCE_CM
+};
+float ultrasonicMaxDistanceCm[N_ULTRASONIC_SENSORS] = {
+  ULTRASONIC_DEFAULT_MAX_DISTANCE_CM, ULTRASONIC_DEFAULT_MAX_DISTANCE_CM
+};
+const float DISTANCE_CALIBRATION_STEP_CM = 1.0f;
+const float ULTRASONIC_MIN_PLAYING_SPAN_CM = 5.0f;
+const float ULTRASONIC_HARD_MAX_DISTANCE_CM = 100.0f; // Keep below the 6000us echo timeout.
 const unsigned long ULTRASONIC_ECHO_TIMEOUT_US = 6000UL;
 // Keep at least ~60ms between HC-SR04 pings to reduce acoustic cross-talk.
 const unsigned long ULTRASONIC_TRIGGER_INTERVAL_MS = 60UL;
@@ -95,8 +104,8 @@ enum : byte {
   BTN_ROOT_PLUS,
   BTN_SCALE_MODE,
   BTN_SUSTAIN,
-  BTN_CC_MINUS_10,
-  BTN_CC_PLUS_10
+  BTN_DISTANCE_MAX_MINUS,
+  BTN_DISTANCE_MAX_PLUS
 };
 
 const byte N_MAIN_BUTTONS = 12;
@@ -104,8 +113,8 @@ const byte MAIN_BUTTON_PINS[N_MAIN_BUTTONS] = {
   4, 5, 6, 7, 8, 9, 10, 11, 12, 13, A4, A5
 };
 
-const byte OPTIONAL_CC_MINUS_10_PIN = 0; // D0 / RX1
-const byte OPTIONAL_CC_PLUS_10_PIN = 1;  // D1 / TX1
+const byte DISTANCE_MAX_MINUS_PIN = 0; // D0 / RX1
+const byte DISTANCE_MAX_PLUS_PIN = 1;  // D1 / TX1
 
 struct ButtonDebounceState {
   byte rawState;
@@ -150,11 +159,12 @@ const char* noteNames[12] = {
   "F#", "G", "G#", "A", "A#", "B"
 };
 
-// Every scale spans exactly two octaves (0..24 semitones).
-// The number of selectable scale notes depends on the selected scale.
+// Each scale table contains up to two octaves (0..24 semitones).
+// Set to 1 or 2 to distribute the selected sensor's distance over that span.
+const byte NOTE_RANGE_OCTAVES = 2;
 const byte SCALE_COUNT = 7;
 const byte SCALE_MAX_NOTE_COUNT = 25;
-const byte scaleNoteCounts[SCALE_COUNT] = {
+const byte scaleMaxNoteCounts[SCALE_COUNT] = {
   15, // Major: 7 notes per octave, plus the closing root.
   15, // Natural minor / Aeolian.
   15, // Harmonic minor.
@@ -203,9 +213,9 @@ int lastSentCCNumber[N_ULTRASONIC_SENSORS] = {-1, -1};
 int lastSentCCChannel[N_ULTRASONIC_SENSORS] = {-1, -1};
 const byte SUSTAIN_CC = 64;
 
-// Global Sustain is sent to each distinct sensor channel. The channel list is
-// synchronized if a sensor channel changes while the button remains pressed.
-bool sustainIsPressed = false;
+// Global Sustain is toggled and sent to each distinct sensor channel. The
+// channel list is synchronized if a sensor channel changes while Sustain is ON.
+bool sustainIsActive = false;
 byte sustainChannels[N_ULTRASONIC_SENSORS] = {0, 0};
 byte sustainChannelCount = 0;
 
@@ -218,7 +228,7 @@ int lastPlayedNote[N_ULTRASONIC_SENSORS] = {-1, -1};
 unsigned long noteStoppedAt[N_ULTRASONIC_SENSORS] = {0, 0};
 
 const int PITCH_BEND_CENTER = 8192;
-const byte PITCH_BEND_RANGE_SEMITONES = 12;
+const byte PITCH_BEND_RANGE_SEMITONES = 24; // +/-24 semitones (4 octaves total).
 const int PITCH_BEND_UPDATE_THRESHOLD = 4;
 int lastPitchBendValue[N_ULTRASONIC_SENSORS] = {-1, -1};
 

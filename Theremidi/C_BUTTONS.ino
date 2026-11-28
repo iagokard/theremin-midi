@@ -6,15 +6,15 @@ void initializeButtons() {
     buttonStates[i].lastChangeAt = 0;
   }
 
-#if ENABLE_CC_STEP10_BUTTONS
-  pinMode(OPTIONAL_CC_MINUS_10_PIN, INPUT_PULLUP);
-  pinMode(OPTIONAL_CC_PLUS_10_PIN, INPUT_PULLUP);
-  buttonStates[BTN_CC_MINUS_10].rawState = HIGH;
-  buttonStates[BTN_CC_MINUS_10].stableState = HIGH;
-  buttonStates[BTN_CC_MINUS_10].lastChangeAt = 0;
-  buttonStates[BTN_CC_PLUS_10].rawState = HIGH;
-  buttonStates[BTN_CC_PLUS_10].stableState = HIGH;
-  buttonStates[BTN_CC_PLUS_10].lastChangeAt = 0;
+#if ENABLE_DISTANCE_CALIBRATION_BUTTONS
+  pinMode(DISTANCE_MAX_MINUS_PIN, INPUT_PULLUP);
+  pinMode(DISTANCE_MAX_PLUS_PIN, INPUT_PULLUP);
+  buttonStates[BTN_DISTANCE_MAX_MINUS].rawState = HIGH;
+  buttonStates[BTN_DISTANCE_MAX_MINUS].stableState = HIGH;
+  buttonStates[BTN_DISTANCE_MAX_MINUS].lastChangeAt = 0;
+  buttonStates[BTN_DISTANCE_MAX_PLUS].rawState = HIGH;
+  buttonStates[BTN_DISTANCE_MAX_PLUS].stableState = HIGH;
+  buttonStates[BTN_DISTANCE_MAX_PLUS].lastChangeAt = 0;
 #endif
 }
 
@@ -23,9 +23,9 @@ void buttons() {
     serviceOneButton(i, MAIN_BUTTON_PINS[i]);
   }
 
-#if ENABLE_CC_STEP10_BUTTONS
-  serviceOneButton(BTN_CC_MINUS_10, OPTIONAL_CC_MINUS_10_PIN);
-  serviceOneButton(BTN_CC_PLUS_10, OPTIONAL_CC_PLUS_10_PIN);
+#if ENABLE_DISTANCE_CALIBRATION_BUTTONS
+  serviceOneButton(BTN_DISTANCE_MAX_MINUS, DISTANCE_MAX_MINUS_PIN);
+  serviceOneButton(BTN_DISTANCE_MAX_PLUS, DISTANCE_MAX_PLUS_PIN);
 #endif
 }
 
@@ -114,35 +114,43 @@ void handleButtonPressed(byte buttonId) {
       break;
 
     case BTN_SUSTAIN:
-      pressGlobalSustain();
+      toggleGlobalSustain();
+      requestConfigDisplay();
       break;
 
-    case BTN_CC_MINUS_10:
-#if ENABLE_CC_STEP10_BUTTONS
-      changeSelectedCCNumber(-10);
+    case BTN_DISTANCE_MAX_MINUS:
+#if ENABLE_DISTANCE_CALIBRATION_BUTTONS
+      adjustSelectedSensorMaximumDistance(-DISTANCE_CALIBRATION_STEP_CM);
       requestConfigDisplay();
 #endif
       break;
 
-    case BTN_CC_PLUS_10:
-#if ENABLE_CC_STEP10_BUTTONS
-      changeSelectedCCNumber(10);
+    case BTN_DISTANCE_MAX_PLUS:
+#if ENABLE_DISTANCE_CALIBRATION_BUTTONS
+      adjustSelectedSensorMaximumDistance(DISTANCE_CALIBRATION_STEP_CM);
       requestConfigDisplay();
 #endif
       break;
   }
 }
 
+// Sustain is a toggle: the press event changes its state; release does nothing.
 void handleButtonReleased(byte buttonId) {
-  if (buttonId == BTN_SUSTAIN && sustainIsPressed) {
+  (void)buttonId;
+}
+
+void toggleGlobalSustain() {
+  if (sustainIsActive) {
     releaseGlobalSustain();
+  } else {
+    pressGlobalSustain();
   }
 }
 
 void pressGlobalSustain() {
-  if (sustainIsPressed) return;
+  if (sustainIsActive) return;
 
-  sustainIsPressed = true;
+  sustainIsActive = true;
   sustainChannelCount = 0;
 
   for (byte sensor = 0; sensor < N_ULTRASONIC_SENSORS; sensor++) {
@@ -171,11 +179,11 @@ void releaseGlobalSustain() {
   }
   MidiUSB.flush();
   sustainChannelCount = 0;
-  sustainIsPressed = false;
+  sustainIsActive = false;
 }
 
 void syncGlobalSustainChannels() {
-  if (!sustainIsPressed) return;
+  if (!sustainIsActive) return;
 
   byte nextChannels[N_ULTRASONIC_SENSORS] = {0, 0};
   byte nextCount = 0;
@@ -219,6 +227,31 @@ void syncGlobalSustainChannels() {
   sustainChannelCount = nextCount;
   for (byte i = 0; i < nextCount; i++) sustainChannels[i] = nextChannels[i];
   MidiUSB.flush();
+}
+
+void adjustSelectedSensorMaximumDistance(float amountCm) {
+  const byte sensor = selectedSensor;
+  float nextMaximum = ultrasonicMaxDistanceCm[sensor] + amountCm;
+  const float minimumAllowed =
+    ultrasonicMinDistanceCm[sensor] + ULTRASONIC_MIN_PLAYING_SPAN_CM;
+
+  if (nextMaximum < minimumAllowed) nextMaximum = minimumAllowed;
+  if (nextMaximum > ULTRASONIC_HARD_MAX_DISTANCE_CM) {
+    nextMaximum = ULTRASONIC_HARD_MAX_DISTANCE_CM;
+  }
+
+  if (nextMaximum == ultrasonicMaxDistanceCm[sensor]) return;
+
+  ultrasonicMaxDistanceCm[sensor] = nextMaximum;
+  currentScalePosition[sensor] = -1;
+
+#ifdef DEBUG
+  Serial.print(F("Sensor "));
+  Serial.print(sensor + 1);
+  Serial.print(F(" max distance = "));
+  Serial.print(ultrasonicMaxDistanceCm[sensor], 1);
+  Serial.println(F(" cm"));
+#endif
 }
 
 void cycleSelectedSensorMode() {

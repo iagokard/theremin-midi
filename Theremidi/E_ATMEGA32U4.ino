@@ -26,9 +26,9 @@ void pitchBend(byte channel, int value) {
   MidiUSB.sendMIDI(event);
 }
 
-// RPN 0,0 = Pitch Bend Sensitivity. Configure +/-12 semitones so a full
-// sensor sweep covers two octaves. Instruments that ignore RPN may need this
-// range configured manually in the DAW/plugin.
+// RPN 0,0 = Pitch Bend Sensitivity. The configured semitone range is applied
+// in both directions from the base note. Instruments that ignore RPN may need
+// the same range configured manually in the DAW/plugin.
 void configurePitchBendRange(byte channel) {
   controlChange(channel, 101, 0); // RPN MSB
   controlChange(channel, 100, 0); // RPN LSB

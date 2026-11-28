@@ -22,8 +22,8 @@ float readUltrasonicDistanceCm(byte sensorIndex) {
 
 void updateUltrasonicSensorState(byte sensorIndex, float newDistanceCm) {
   const bool inPlayingRange =
-    newDistanceCm >= ULTRASONIC_MIN_DISTANCE_CM &&
-    newDistanceCm <= ULTRASONIC_MAX_DISTANCE_CM;
+    newDistanceCm >= ultrasonicMinDistanceCm[sensorIndex] &&
+    newDistanceCm <= ultrasonicMaxDistanceCm[sensorIndex];
 
   if (!inPlayingRange) {
     if (ultrasonicInvalidReadings[sensorIndex] < 255) {
@@ -92,13 +92,17 @@ const uint16_t DISTANCE_CURVE_TABLE[65] PROGMEM = {
 
 // Returns the curved distance as a fixed-point value in the range 0..1024.
 // 0 means the hand is nearest to the sensor; 1024 means farthest away.
-uint16_t distanceToCurve1024(float distanceCm) {
-  if (distanceCm <= ULTRASONIC_MIN_DISTANCE_CM) return 0;
-  if (distanceCm >= ULTRASONIC_MAX_DISTANCE_CM) return 1024;
+uint16_t distanceToCurve1024(byte sensorIndex, float distanceCm) {
+  const float minimumDistance = ultrasonicMinDistanceCm[sensorIndex];
+  const float maximumDistance = ultrasonicMaxDistanceCm[sensorIndex];
+  const float distanceSpan = maximumDistance - minimumDistance;
+
+  if (distanceCm <= minimumDistance) return 0;
+  if (distanceCm >= maximumDistance) return 1024;
+  if (distanceSpan <= 0.0f) return 0;
 
   const uint16_t scaled = (uint16_t)(
-    (distanceCm - ULTRASONIC_MIN_DISTANCE_CM) *
-    (16384.0f / (ULTRASONIC_MAX_DISTANCE_CM - ULTRASONIC_MIN_DISTANCE_CM))
+    (distanceCm - minimumDistance) * (16384.0f / distanceSpan)
   );
   const byte index = (byte)(scaled >> 8);
   const byte fraction = (byte)(scaled & 0xFF);
@@ -109,10 +113,20 @@ uint16_t distanceToCurve1024(float distanceCm) {
 
 // Schmitt-style note selection prevents repeated Note On/Off events when a
 // hand hovers around the boundary between adjacent scale positions.
+byte getActiveScaleNoteCount(byte scaleIndex) {
+  const int maximumSemitone = (int)NOTE_RANGE_OCTAVES * 12;
+  byte count = 0;
+  while (count < scaleMaxNoteCounts[scaleIndex] &&
+         scaleIntervals[scaleIndex][count] <= maximumSemitone) {
+    count++;
+  }
+  return count;
+}
+
 int distanceToScalePosition(byte sensorIndex) {
-  const byte noteCount = scaleNoteCounts[scaleModeIndex];
+  const byte noteCount = getActiveScaleNoteCount(scaleModeIndex);
   const int lastPosition = (int)noteCount - 1;
-  const uint16_t curve = distanceToCurve1024(ultrasonicDistanceCm[sensorIndex]);
+  const uint16_t curve = distanceToCurve1024(sensorIndex, ultrasonicDistanceCm[sensorIndex]);
 
   // Q8 fixed point: near = last position, far = position zero.
   const uint32_t positionQ8 =
@@ -134,15 +148,15 @@ int distanceToScalePosition(byte sensorIndex) {
   return stablePosition;
 }
 
-byte distanceToMidiValue(float distanceCm, byte minimumValue) {
-  const uint16_t curve = distanceToCurve1024(distanceCm);
+byte distanceToMidiValue(byte sensorIndex, float distanceCm, byte minimumValue) {
+  const uint16_t curve = distanceToCurve1024(sensorIndex, distanceCm);
   const uint16_t span = (uint16_t)(127 - minimumValue);
   return (byte)(minimumValue +
     ((uint32_t)(1024 - curve) * span + 512UL) / 1024UL);
 }
 
-int distanceToPitchBendValue(float distanceCm) {
-  const uint16_t curve = distanceToCurve1024(distanceCm);
+int distanceToPitchBendValue(byte sensorIndex, float distanceCm) {
+  const uint16_t curve = distanceToCurve1024(sensorIndex, distanceCm);
   return (int)(((uint32_t)(1024 - curve) * 16383UL + 512UL) / 1024UL);
 }
 
@@ -156,6 +170,29 @@ int calculateNoteForSensor(byte sensorIndex) {
 int calculatePitchBendBaseNote(byte sensorIndex) {
   const int rootMidiNote = 48 + rootPitchClass + octaveOffsets[sensorOctaveIndex[sensorIndex]];
   return constrain(rootMidiNote, 0, 127);
+}
+
+// Estimate the nearest equal-tempered MIDI note represented by the last bend.
+// MIDI itself sends Note On + Pitch Bend, not a measured acoustic frequency.
+int calculatePitchBendDisplayNote(byte sensorIndex) {
+  const int baseNote = activeNote[sensorIndex] >= 0
+    ? activeNote[sensorIndex]
+    : calculatePitchBendBaseNote(sensorIndex);
+  const int bendValue = lastPitchBendValue[sensorIndex] < 0
+    ? PITCH_BEND_CENTER
+    : lastPitchBendValue[sensorIndex];
+  const int bendDelta = bendValue - PITCH_BEND_CENTER;
+
+  int semitoneOffset = 0;
+  if (bendDelta >= 0) {
+    const long numerator = (long)bendDelta * PITCH_BEND_RANGE_SEMITONES;
+    semitoneOffset = (int)((numerator + 4095L) / 8191L);
+  } else {
+    const long numerator = (long)(-bendDelta) * PITCH_BEND_RANGE_SEMITONES;
+    semitoneOffset = -(int)((numerator + 4096L) / 8192L);
+  }
+
+  return constrain(baseNote + semitoneOffset, 0, 127);
 }
 
 bool otherSensorHoldsSameNote(byte sensorIndex, int noteNumber, byte channel) {
@@ -257,10 +294,10 @@ void processPitchBendSensor(byte sensorIndex) {
   if (activeNote[sensorIndex] != baseNote || activeNoteChannel[sensorIndex] != channel) {
     stopPitchBendForSensor(sensorIndex);
 
-    // Configure the receiver for a +/-12-semitone bend, then establish the
-    // bend before Note On to avoid a brief note at the old pitch.
+    // Configure the receiver for the selected +/-semitone bend range, then
+    // establish the bend before Note On to avoid a brief note at the old pitch.
     configurePitchBendRange(channel);
-    const int bendValue = distanceToPitchBendValue(ultrasonicDistanceCm[sensorIndex]);
+    const int bendValue = distanceToPitchBendValue(sensorIndex, ultrasonicDistanceCm[sensorIndex]);
     pitchBend(channel, bendValue);
     MidiUSB.flush();
 
@@ -275,7 +312,7 @@ void processPitchBendSensor(byte sensorIndex) {
     lastNoteScreenUntil = 0;
     lastPitchBendValue[sensorIndex] = bendValue;
   } else {
-    const int bendValue = distanceToPitchBendValue(ultrasonicDistanceCm[sensorIndex]);
+    const int bendValue = distanceToPitchBendValue(sensorIndex, ultrasonicDistanceCm[sensorIndex]);
     if (lastPitchBendValue[sensorIndex] < 0 ||
         abs(bendValue - lastPitchBendValue[sensorIndex]) >= PITCH_BEND_UPDATE_THRESHOLD) {
       pitchBend(channel, bendValue);
@@ -341,7 +378,7 @@ void sendSensorCC(byte sensorIndex, byte value) {
 void processCCSensor(byte sensorIndex) {
   byte value = 0;
   if (ultrasonicSensorActive[sensorIndex]) {
-    value = distanceToMidiValue(ultrasonicDistanceCm[sensorIndex], 0);
+    value = distanceToMidiValue(sensorIndex, ultrasonicDistanceCm[sensorIndex], 0);
   }
   sendSensorCC(sensorIndex, value);
 }
@@ -350,7 +387,7 @@ void processVelocitySensor(byte sensorIndex) {
   // Intentionally retain the last valid global velocity when the hand leaves.
   if (!ultrasonicSensorActive[sensorIndex]) return;
 
-  globalVelocity = distanceToMidiValue(ultrasonicDistanceCm[sensorIndex], 1);
+  globalVelocity = distanceToMidiValue(sensorIndex, ultrasonicDistanceCm[sensorIndex], 1);
 
 #ifdef DEBUG
   Serial.print(F("Global velocity = "));

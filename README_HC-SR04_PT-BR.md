@@ -44,7 +44,7 @@ Ao entrar no modo PITCH, o sensor inicia uma nota-base definida pela nota-base g
 - Centro da faixa: afinação central.
 - Mão distante: bend negativo máximo.
 
-O firmware envia RPN 0,0 para configurar a sensibilidade de Pitch Bend do canal em **±12 semitons**. Assim, a varredura completa do sensor corresponde a duas oitavas em torno da nota-base. Alguns instrumentos virtuais podem ignorar essa configuração RPN; nesses casos, configure manualmente a faixa de Pitch Bend do instrumento para ±12 semitons.
+O firmware envia RPN 0,0 para configurar a sensibilidade de Pitch Bend do canal em **±24 semitons** por padrão. Assim, a varredura completa do sensor cobre quatro oitavas ao redor da nota-base (duas para baixo e duas para cima). O valor é configurável em `PITCH_BEND_RANGE_SEMITONES`. Alguns instrumentos virtuais podem ignorar essa configuração RPN; nesses casos, configure manualmente a faixa de Pitch Bend do instrumento para o mesmo valor.
 
 Pitch Bend é uma mensagem por canal MIDI. Se os dois sensores utilizarem PITCH no mesmo canal, ambos compartilharão o mesmo controle de afinação. Para controlar dois instrumentos de forma independente, configure canais diferentes — por exemplo, canal 1 para o Sensor 1 e canal 2 para o Sensor 2.
 
@@ -52,17 +52,17 @@ O sensor é atualizado aproximadamente a cada 120 ms, pois os disparos dos dois 
 
 ## Escalas
 
-Todas as escalas cobrem a mesma extensão de **duas oitavas** (0 a 24 semitons). A quantidade de posições depende da escala:
+Por padrão, todas as escalas cobrem a mesma extensão de **duas oitavas** (0 a 24 semitons). A extensão pode ser alterada para uma oitava por `NOTE_RANGE_OCTAVES = 1` no início de `Theremidi.ino`. A quantidade de posições depende da escala e da extensão escolhida:
 
-| Escala | Posições em duas oitavas |
-|---|---:|
-| Major / Ionian | 15 |
-| Minor / Aeolian | 15 |
-| Harmonic Minor | 15 |
-| Minor Pentatonic | 11 |
-| Major Pentatonic | 11 |
-| Whole Tone | 13 |
-| Chromatic | 25 |
+| Escala | 1 oitava | 2 oitavas (padrão) |
+|---|---:|---:|
+| Major / Ionian | 8 | 15 |
+| Minor / Aeolian | 8 | 15 |
+| Harmonic Minor | 8 | 15 |
+| Minor Pentatonic | 6 | 11 |
+| Major Pentatonic | 6 | 11 |
+| Whole Tone | 7 | 13 |
+| Chromatic | 13 | 25 |
 
 A escala cromática percorre todos os semitons. Nas demais escalas, o sensor faz snapping para as notas correspondentes à escala. A distância útil é distribuída entre as posições de cada escala; portanto, a distância física por nota não é necessariamente igual em semitons.
 
@@ -93,12 +93,12 @@ Os dois sensores compartilham 5V e GND. Os disparos são alternados para reduzir
 
 | OLED | Leonardo |
 |---|---|
-| VCC | 5V ou 3.3V conforme o módulo |
+| VCC | 3.3V (módulo testado nesta montagem) |
 | GND | GND |
 | SDA | D2 / SDA |
 | SCL | D3 / SCL |
 
-Confirme se o módulo OLED aceita 5V antes de alimentá-lo pelo pino 5V.
+Nesta montagem, alimente o OLED em 3.3V. Não use 5V no VCC deste módulo sem identificar com certeza o circuito regulador da revisão da placa.
 
 ### Botões principais
 
@@ -117,30 +117,26 @@ Cada botão deve ligar seu pino ao **GND** quando pressionado. O firmware usa `I
 | 9 | D12 | Nota-base global -1 (C → B, com ciclo) |
 | 10 | D13 | Nota-base global +1 (C → C# → ... → B → C) |
 | 11 | A4 | Próximo modo de escala global |
-| 12 | A5 | Sustain global (pressionado = ligado; solto = desligado) |
+| 12 | A5 | Sustain global em toggle (um toque liga; outro desliga) |
 
-O botão Sustain envia CC64 = 127 para cada canal MIDI distinto configurado nos sensores. Ao soltar, envia CC64 = 0 para todos os canais que permanecem sob Sustain. Se o canal de um sensor for alterado enquanto o botão estiver pressionado, o firmware libera o canal antigo e ativa o novo.
+O botão Sustain funciona como toggle: um toque envia CC64 = 127 para cada canal MIDI distinto configurado nos sensores; o próximo toque envia CC64 = 0. Soltar o botão não altera o estado. Se o canal de um sensor for alterado enquanto o Sustain estiver ligado, o firmware libera o canal antigo e ativa o novo.
 
-### Botões opcionais CC ±10
+### Botões opcionais de calibração de distância
 
-| Botão opcional | Pino | Função |
+| Botão | Pino | Função |
 |---|---|---|
-| CC -10 | D0 / RX1 | CC -10 do sensor selecionado |
-| CC +10 | D1 / TX1 | CC +10 do sensor selecionado |
+| Distância máxima -1 cm | D0 / RX1 | Reduz o cutoff distante do sensor selecionado |
+| Distância máxima +1 cm | D1 / TX1 | Aumenta o cutoff distante do sensor selecionado |
 
-Esses botões estão **desabilitados por padrão**. Para habilitá-los, altere no início de `Theremidi.ino`:
-
-```cpp
-#define ENABLE_CC_STEP10_BUTTONS 0
-```
-
-para `1`. Não utilize `Serial1` enquanto D0/D1 estiverem funcionando como botões.
+Esses botões estão **habilitados por padrão**. A distância mínima continua configurável diretamente no array `ultrasonicMinDistanceCm[]`, no início de `Theremidi.ino`. A distância máxima ajustada por D0/D1 é temporária e volta ao valor inicial no próximo reset; copie o valor final para `ultrasonicMaxDistanceCm[]` depois da calibração. Não utilize `Serial1` enquanto D0/D1 estiverem funcionando como botões.
 
 ## Display OLED
 
-- A tela de configuração mostra o sensor selecionado e seus parâmetros individuais de oitava/canal.
+- A tela de configuração mostra o sensor selecionado, seus limites próximo/distante e seus parâmetros individuais.
 - Em NOTES, mostra a nota tocada, a escala global, a oitava individual e o canal de saída.
-- Em PITCH, mostra a nota-base, o valor Pitch Bend e o canal.
+- Em PITCH, mostra a nota temperada mais próxima estimada a partir da nota-base + Pitch Bend, além da nota-base e do canal.
+- Se os dois sensores estiverem tocando, a tela prioriza o sensor selecionado por D4; se somente um estiver tocando, mostra esse sensor.
+- O canto superior direito indica `SUS:ON` ou `SUS:OFF`.
 - Em VELOCITY, mostra o valor global retido.
 - Em CC, mostra o valor, o número CC e o canal do sensor selecionado.
 - Ao pressionar um botão de configuração, a tela de configuração aparece por aproximadamente 800 ms. A tela de nota retorna depois que esse período termina.
@@ -149,15 +145,17 @@ para `1`. Não utilize `Serial1` enquanto D0/D1 estiverem funcionando como botõ
 
 Os valores iniciais permanecem ajustáveis em `Theremidi.ino`:
 
-- Distância útil: 8–60 cm.
+- Distância útil inicial: 8–60 cm, configurável individualmente por sensor.
 - Timeout do eco: 6000 µs.
-- Intervalo entre disparos alternados: 60 ms.
+- Intervalo entre disparos alternados: 60 ms; cada sensor é lido aproximadamente a cada 120 ms.
 - Filtro EMA normal: alpha 0.35.
 - Filtro EMA para movimentos maiores: alpha 0.70 quando a leitura muda pelo menos 3 cm.
-- Histerese na troca de posição da escala: 0.15 da distância entre posições adjacentes.
-- Duas leituras inválidas para liberar o sensor.
+- Histerese de troca de nota: `NOTE_HYSTERESIS_Q8 = 166` (aproximadamente 0.65 de um passo de escala).
+- Duas leituras inválidas consecutivas para liberar o sensor.
+- Extensão das escalas: `NOTE_RANGE_OCTAVES = 2` por padrão; pode ser 1.
+- Pitch Bend: `PITCH_BEND_RANGE_SEMITONES = 24`, ou seja, ±24 semitons.
 
-A histerese reduz oscilações de nota quando a mão fica próxima da fronteira entre posições. O filtro adaptativo suaviza pequenas variações e responde mais rapidamente a deslocamentos maiores. Ajuste esses valores depois de testar os sensores na montagem física.
+A histerese reduz oscilações de nota quando a mão fica próxima da fronteira entre posições. O filtro adaptativo suaviza pequenas variações e responde mais rapidamente a deslocamentos maiores. Consulte `GUIA_CALIBRACAO_PT-BR.md` para os locais exatos e os efeitos de cada parâmetro.
 
 ## Bibliotecas e compilação
 
@@ -174,7 +172,7 @@ Selecione **Arduino Leonardo** como placa. O firmware utiliza o USB nativo do AT
 - Oitava independente por sensor.
 - Canal MIDI independente por sensor, para roteamento separado em DAWs como REAPER.
 - Quarto modo de sensor: PITCH, com nota-base e Pitch Bend contínuo.
-- Configuração RPN de sensibilidade Pitch Bend em ±12 semitons.
+- Configuração RPN de sensibilidade Pitch Bend em ±24 semitons por padrão, configurável.
 - Nova escala Chromatic.
 - Todas as escalas de snapping normalizadas para uma extensão de duas oitavas, com quantidade de posições específica por escala.
 - Filtro ultrassônico adaptativo e histerese para reduzir oscilações de notas.
@@ -187,3 +185,13 @@ Selecione **Arduino Leonardo** como placa. O firmware utiliza o USB nativo do AT
 Esta revisão reduz o uso de memória de programa sem remover funcionalidades. O mapeamento não usa mais `pow()`; uma tabela de consulta em PROGMEM aproxima a curva original, com interpolação inteira. A imagem de abertura da biblioteca Adafruit SSD1306 também foi desativada nesta cópia porque o firmware limpa a tela logo após inicializá-la. Os quatro modos dos sensores, a escala cromática, Pitch Bend, a configuração independente de canal/oitava, os filtros e o display permanecem habilitados.
 
 A pasta `Libs/Adafruit_SSD1306` contém a biblioteca Adafruit SSD1306 2.3.0 com a pequena personalização para omitir o splash. Para aproveitar essa redução, verifique na saída detalhada de compilação qual instalação da biblioteca a Arduino IDE utiliza e substitua nela o `Adafruit_SSD1306.cpp` pela cópia deste repositório; reinicie a IDE depois. Se a sua versão instalada não for 2.3.0, não substitua o arquivo inteiro: aplique as duas alterações documentadas em `PATCHES/Adafruit_SSD1306_no_splash.patch` (remover o include de `splash.h` e o bloco que desenha o bitmap). Uma atualização da biblioteca pode sobrescrever essa otimização. A renderização OLED também evita `snprintf()` para não puxar código desnecessário de `stdio`.
+
+
+## v3.2 — calibragem e operação
+
+- Limites próximo/distante independentes por sensor; D0/D1 ajustam a distância máxima do sensor selecionado em passos de 1 cm.
+- Extensão de NOTES configurável em 1 ou 2 oitavas por `NOTE_RANGE_OCTAVES`.
+- OLED prioriza o sensor selecionado quando ambos estão tocando; quando só um está ativo, mostra esse sensor.
+- Sustain em modo toggle no botão A5, com indicador `SUS:ON/OFF` na OLED.
+- Pitch Bend ampliado por padrão para ±24 semitons. A OLED mostra a nota temperada mais próxima estimada a partir do Note On + Pitch Bend enviados.
+- Consulte `GUIA_CALIBRACAO_PT-BR.md` para localização e instruções de ajuste.
